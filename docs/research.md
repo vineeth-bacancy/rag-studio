@@ -27,23 +27,42 @@ becomes a default only after it moves our own scorecard (§8 of the spec).
 | Stage | Plan | Why (short) | Milestone |
 |---|---|---|---|
 | Web stack | Next 16.3.0, React 19.2.8, Tailwind 4.3.3, shadcn base-nova on Base UI 1.9, FastAPI 0.143.1 | Same stack as the trading app; versions checked live | M0 ✓ |
-| Streaming | FastAPI's built-in SSE (`fastapi.sse`) + 15 s heartbeat | Native since FastAPI 0.13x; the Next proxy drops idle sockets | M1 |
+| Streaming | Our own SSE response (`web/api/sse.py`): `no-cache, no-transform`, `X-Accel-Buffering: no`, a ping every 15 s | FastAPI's `EventSourceResponse` hardcodes `Cache-Control: no-cache` (checked in M1); Next gzips a stream without `no-transform` | M1 ✓ |
 | Parsing | PyMuPDF baseline + **Docling 2.139** as a second parser profile, CPU torch | Layout, tables, headers moved out of the body; not a fix for "Th" or hidden text | M2 |
 | Vector store | **LanceDB 0.40**, exact (flat) search, our own RRF fusion | 7-10 ms exact at 1k rows; built-in hybrid hides the two input lists | M1/M3 |
-| Embeddings | nomic (baseline) → **qwen3-embedding:0.6b** (Ollama) → **EmbeddingGemma 2** (sentence-transformers, not Ollama) → qwen3-embedding:4b on Colab | EmbeddingGemma 2 on Ollama is MLX-only (no Linux) | M4 |
-| Reranker | **Qwen3-Reranker-0.6B** via sentence-transformers `CrossEncoder` on CPU (top 10); **4B** fp16 on Colab. Skip 8B | Ollama has no rerank API; 8B is no better than 4B on English | M5 |
-| Techniques | Defaults: fixed-size and structure-aware chunks, hybrid + rerank. Opt-in: contextual retrieval (Colab), HyDE, multi-query, decomposition, agentic loop (Colab) | The evidence for each comes from large models; our scorecard decides | M3-M5 |
-| Answer LLM | **qwen3.5:4b** with `think:false` (measured: 37 s warm); qwen3:1.7b fast fallback | Thinking-off verified live; gemma4:e4b too big for free RAM | M6 |
+| Embeddings | nomic (baseline) → **qwen3-embedding:0.6b** (Ollama) → **qwen3-embedding:8b** built on Colab (the spec's ladder row 5) → **EmbeddingGemma 2** (sentence-transformers, not Ollama). qwen3-embedding:4b is an optional extra row | EmbeddingGemma 2's Ollama build cannot run on Linux | M4 |
+| Reranker | **Qwen3-Reranker-0.6B** via sentence-transformers `CrossEncoder` on CPU, **top 20 → top 5** as the spec says, latency measured; top 10 is the measured fallback if 20 is too slow. **4B** fp16 on Colab, then **8B** in 8-bit (fp16 does not fit a T4) | Ollama has no rerank API | M5 |
+| Techniques | Starting positions only: fixed-size and structure-aware chunks, hybrid + rerank. Every technique is a switch, and the scorecard sets the defaults | The evidence for each comes from large models | M3-M5 |
+| Answer LLM | Candidates as the spec lists them: **qwen3.5:4b** (`think:false` verified: 37 s warm) and **gemma4:e4b** locally; gemma4:12b and qwen3.5:9b on Colab; qwen3:1.7b and qwen3:8b as reference rows | The scorecard and latency pick the default | M6 |
 | Evaluation | **DeepEval 4.2** behind our own judge wrapper, telemetry off, `penalize_ambiguous_claims=True`, our own claim/verdict count check; k = 3-5 repeats with spread | RAGAS idle since Feb 2026 and fails to import fresh; DeepEval's default faithfulness passes unsupported claims | M6 |
 | Tracing | Our own trace record in the app; **Phoenix 20.21** as an optional local sidecar, locked down, OTLP over HTTP only | Langfuse needs 5 services and has an update check that cannot be turned off | M6 |
 
-**Decisions that are yours** (none blocks M1):
-1. **Upgrade Ollama 0.32.6 → 0.40.4?** It would enable image embeddings through
-   `/api/embed` and newer model support, but Ollama is shared with the trading
-   app's daily run. Not needed before M7.
-2. **gemma4:e4b locally** (approved for M6): measured free RAM is often 2-4 GB
-   and e4b needs ~6.6 GB of weights + KV cache. Research A suggests `gemma4:e2b`
-   (4.6 GB) locally, or Gemma only on Colab. Decide at M6.
+**Audit, 2026-10-15** (start of M1). Every M0 deliverable was checked against
+spec §17, and the claims that change the plan were re-run live. Three M0
+recommendations had overridden the spec without asking, and they are corrected
+above: the spec's plan stands, and the scorecard decides.
+
+| M0 research said | The spec says | Now |
+|---|---|---|
+| Colab embedding = qwen3-embedding:4b; 8b optional | M4 and ladder row 5: "0.6B, then **8B** (Colab)" | 8b on Colab is in the plan; 4b is an optional extra row |
+| Reranker top 10 by default; skip 8B | "0.6B on the CPU for **top-20 → top-5**. Measure the latency"; "4B/8B on Colab" | Top 20 first, measured. 8B is kept, in 8-bit on the T4, after 4B |
+| Don't pull gemma4:e4b; use e2b | Local candidates are qwen3.5:4b **and gemma4:e4b**; benchmark and pick. You approved the e4b pull for M6 | e4b is benchmarked at M6 when no other model is loaded (`ollama ps`), with `keep_alive: 0` |
+
+The two questions M0 left open are both answered by the spec:
+1. **No Ollama upgrade.** Spec §2.2 already sends image embeddings through
+   Python. An upgrade would not help either: EmbeddingGemma 2's Ollama build is
+   safetensors in `nvfp4` and needs Ollama 0.36 or later (re-checked in the
+   registry on 2026-10-15). It does not run on Linux, on any version. Ollama
+   stays at 0.32.6, the version the trading app shares.
+2. **gemma4:e4b stays a local candidate** (see the table). The free-RAM risk is
+   handled by measuring it alone, not by skipping it.
+
+Re-verified live on 2026-10-15: `/api/rerank` and `/v1/rerank` return 404 on
+0.32.6. Ollama's latest release is v0.40.4 (2026-10-12). The CPU is an
+i5-1135G7 with 4 cores and 8 threads. The three PDFs are byte-identical to the
+originals (sha256). On PyPI, ragas is still 0.4.3 (2026-01-13), deepeval is
+4.2.8, lancedb is 0.40.0, docling is 2.139.0, and arize-phoenix is 20.21.4
+(a patch above the one tested).
 
 ## 1. Web stack (Next.js 16, shadcn on Base UI, Tailwind v4, FastAPI)
 
@@ -60,7 +79,7 @@ becomes a default only after it moves our own scorecard (§8 of the spec).
 | shadcn base-nova composes with `render={<X/>}`; `asChild` is dropped silently | VERIFIED-DOC (trading) | trading `docs/14-web-dashboard.md` |
 | tailwind-merge only dedupes classes **within one variant**: a component's `data-vertical:self-stretch` beats a call site's `self-center` | VERIFIED-LIVE | QA M0-02 (computed `align-self: stretch`) |
 | FastAPI 0.143.1 has SSE built in: `fastapi.sse.EventSourceResponse` and `ServerSentEvent(data, event, id, retry, comment)` | VERIFIED-DOC | ctx7 `/websites/fastapi_tiangolo`, fastapi.tiangolo.com/reference/sse |
-| Whether `EventSourceResponse` sets `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` by itself | UNVERIFIED (set explicitly in M1) | |
+| `EventSourceResponse` (as `response_class` with `yield`) sets `Cache-Control: no-cache` and `X-Accel-Buffering: no`, pings `: ping` after 15 s idle, then **appends** the route's own headers: `no-transform` can only arrive as a second Cache-Control header | VERIFIED-DOC (source, 2026-10-15) | `fastapi/routing.py` 0.143.1, the SSE branch |
 | Starlette 1.8.0's `TestClient` prefers `httpx2` (2.13.1, pydantic org) and warns on httpx | VERIFIED-LIVE | test run warning; PyPI |
 
 **Recommendation:** keep the engine's Ollama client on httpx 0.28 for now
@@ -79,6 +98,7 @@ Revisit when httpx2's API is documented as a drop-in.
 | Image or audio input to `/api/embed` exists only from 0.40.4; on 0.32.6 → 400 "invalid input type" | VERIFIED-LIVE + DOC |
 | **`num_ctx` overflow is silent:** HTTP 200, the server keeps the first 4 tokens and the tail, and **drops the start**. Only `prompt_eval_count` (258 for a 1,792-token prompt at `num_ctx` 512) and the server log reveal it. The model then answered from the wrong text | VERIFIED-LIVE |
 | Multi-message overflow drops whole older turns and keeps the system prompt | VERIFIED-LIVE |
+| `prompt_eval_count` counts the **whole** prompt even when the prefix is served from cache (274 then 274 tokens; 5.6 s then 0.6 s), so characters per token is a reliable overflow signal | VERIFIED-LIVE (2026-10-15) |
 | Changing `num_ctx` between requests restarts llama-server and reloads the model (2-4 s for qwen3:1.7b) | VERIFIED-LIVE |
 | `/api/ps` returns `size`, `size_vram`, `expires_at`, `context_length`; `/api/tags` returns `capabilities` and `details.context_length` | VERIFIED-LIVE |
 | `keep_alive: 0` unloads after the request; default 5 min | VERIFIED-DOC + LIVE |
@@ -111,7 +131,10 @@ Revisit when httpx2's API is documented as a drop-in.
 **Recommendation:** use the Ollama library tags. Store the literal query
 template and one fixed RAG task string per index (e.g. "Given a question about
 a PDF report, retrieve passages that answer the question"); test the default vs
-custom task as a scorecard row, never as a silent change.
+custom task as a scorecard row, never as a silent change. Build order (the
+spec's ladder row 5): 0.6b locally, then **8b on Colab**. The Q4_K_M GGUF is not
+the fp16 build that gives NaN, but the M4 build still checks every vector for
+NaN and zeros. 4b is an optional extra row.
 
 ## 4. EmbeddingGemma 2
 
@@ -150,7 +173,7 @@ with `audio_config=None`.
 candidate, 4-6 passages of context, streamed. Prompt reading dominates latency
 on this CPU (~35 tok/s), so the passage count is the main speed lever. Treat
 figure reading as an ingest-time job (about a minute per page), never per query.
-Gemma 4 locally is a RAM question for M6 (see §0).
+gemma4:e4b is benchmarked against it at M6, loaded alone (see the §0 audit).
 
 ## 6. Qwen3-Reranker
 
@@ -166,9 +189,10 @@ Gemma 4 locally is a RAM question for M6 (see §0).
 | `llama-server --rerank` with the ggml-org Q8_0 GGUF is a possibly faster CPU path | VERIFIED-LIVE (metadata) / UNVERIFIED (runtime) |
 
 **Recommendation:** `CrossEncoder("Qwen/Qwen3-Reranker-0.6B")` in-process, fp32,
-batch 4-8, **top 10 by default** (top 20 as a "slow" option, with the measured
-time in the UI). On Colab, 4B fp16 behind an allowlisted `POST /rerank` with a
-NaN guard. Do not build 8B.
+batch 4-8, **top 20 → top 5** as the spec says, with the measured time in the
+UI. If the measurement shows 20 is too slow, top 10 becomes a measured option.
+On Colab, 4B fp16 behind an allowlisted `POST /rerank` with a NaN guard, then 8B
+in 8-bit as its own row (its fp16 weights, 16.4 GB, do not fit a T4).
 
 ## 7. Docling
 

@@ -48,3 +48,19 @@ ROLES: tuple[Role, ...] = (
 
 def ollama_roles() -> list[Role]:
     return [r for r in ROLES if r.runs_on == "ollama" and r.model]
+
+
+def role_model(key: str) -> str:
+    """The model a role names. Raises if the role has no model yet."""
+    role = next((r for r in ROLES if r.key == key), None)
+    if role is None or role.model is None:
+        raise KeyError(f"The {key} role has no model configured.")
+    return role.model
+
+
+# Measured behaviour worth showing beside a model in a picker (spec §10).
+MODEL_NOTES: dict[str, str] = {
+    "qwen3:4b": "This build ignores thinking off: 128-829 s per answer here. Not recommended.",
+    "qwen3:8b": "About 141-246 s per answer on this CPU; a full scorecard takes about 34 minutes.",
+    "qwen3:1.7b": "About 25 s per answer on this CPU. The baseline answer model.",
+}

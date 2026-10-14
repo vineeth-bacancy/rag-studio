@@ -1,0 +1,97 @@
+{
+  "id": "set-a",
+  "name": "Set A",
+  "description": "Your 9 questions plus 2 traps: the main scorecard. Two-part questions, section references and comparisons.",
+  "source": "Build spec §7; answer pages verified by hand in ~/Dev/RAG/advanced-rag (LEARNING_LOG.md, M3-M4).",
+  "scored": true,
+  "questions": [
+    {
+      "id": "A1",
+      "question": "How many depository libraries did GPO staff visit in FY 2018?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [5, 21],
+      "expect": ["166"],
+      "note": "166, in 25 states. The 3-year total of over 610 is a different number."
+    },
+    {
+      "id": "A2",
+      "question": "What new digital system replaced FDsys, and when was it fully deployed?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [4, 8, 10, 22, 39],
+      "expect": ["govinfo", "2018"],
+      "note": "govinfo: out of beta Dec 2017, full-scale deployment during FY 2018, FDsys retired Dec 2018."
+    },
+    {
+      "id": "A3",
+      "question": "How much did GPO procure in printing and information products in FY 2018 on behalf of federal agencies?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [5, 14, 17],
+      "expect": ["375"],
+      "note": "More than $375 million ($375.7M)."
+    },
+    {
+      "id": "A4",
+      "question": "What is the growth outlook for South Asia in this report?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [26, 96, 97, 98, 189],
+      "expect": ["6.3"],
+      "note": "6.3% in 2026, then about 7% a year in 2027-28."
+    },
+    {
+      "id": "A5",
+      "question": "What does Chapter 3 say about sovereign debt in developing economies?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [19, 20, 109, 110],
+      "expect": ["debt", "interest"],
+      "note": "Rising debt leads to higher spreads and yields, a non-linear effect. The bibliography (p139-140) ranked above the summary in the baseline."
+    },
+    {
+      "id": "A6",
+      "question": "According to the executive summary, what are the main risks to the global outlook?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [19],
+      "expect": ["hostilities"],
+      "note": "Renewed escalation of hostilities, commodity disruptions, inflation, food insecurity. The baseline misses it: the risks paragraph never says 'executive summary' (rank 45)."
+    },
+    {
+      "id": "A7",
+      "question": "How much less energy does iMac use compared to the ENERGY STAR requirement?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [7],
+      "expect": ["58"],
+      "note": "58 percent less."
+    },
+    {
+      "id": "A8",
+      "question": "What is the total carbon footprint of the iMac, and how much of that comes from product use versus manufacturing?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [10],
+      "expect": ["346", "45", "50"],
+      "note": "346 kg CO2e: product use 45%, production 50%."
+    },
+    {
+      "id": "A9",
+      "question": "What material is the iMac stand made from, and what percentage of it is recycled?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [1, 2, 4],
+      "expect": ["aluminum", "100"],
+      "note": "100% recycled aluminum."
+    },
+    {
+      "id": "T1",
+      "question": "What is the capital of France?",
+      "doc_id": null,
+      "answer_pages": [],
+      "expect": "REFUSE",
+      "note": "Trap: not in the documents, though every model knows it. Must refuse."
+    },
+    {
+      "id": "T2",
+      "question": "What was GPO's net income in fiscal year 2019?",
+      "doc_id": null,
+      "answer_pages": [],
+      "expect": "REFUSE",
+      "note": "Trap: the report covers FY 2018 only. Must refuse."
+    }
+  ]
+}

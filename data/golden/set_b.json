@@ -1,0 +1,57 @@
+{
+  "id": "set-b",
+  "name": "Set B",
+  "description": "The first retrieval set: single facts stated on several pages. Scored for retrieval only.",
+  "source": "Build spec §7; answer pages completed by hand after the first baseline run (LEARNING_LOG.md, M3).",
+  "scored": false,
+  "questions": [
+    {
+      "id": "B1",
+      "question": "What was GPO's net income in fiscal year 2018?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [25, 26, 27, 44, 59, 60],
+      "expect": null,
+      "note": "$52.6M (52,624 in thousands); FY 2017 $58.9M. $20.4M is the adjusted figure."
+    },
+    {
+      "id": "B2",
+      "question": "How many pages is the Official Congressional Directory for the 115th Congress?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [4, 13],
+      "expect": null,
+      "note": "1,242 pages."
+    },
+    {
+      "id": "B3",
+      "question": "How many titles did GPO's websites give access to by the end of FY 2018?",
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [4, 8, 15, 22],
+      "expect": null,
+      "note": "Over 2.5 million. Page 78 is a false match."
+    },
+    {
+      "id": "B4",
+      "question": "What is the global growth forecast for 2026?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [17, 19, 25, 27, 52, 200],
+      "expect": null,
+      "note": "2.5% (down from 2.9% in 2025). Page 88 is a false match. The baseline misses it: the top 5 are U.S. and euro-area growth, the right topic but the wrong subject."
+    },
+    {
+      "id": "B5",
+      "question": "How much recycled content does the iMac contain?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [1, 2, 4],
+      "expect": null,
+      "note": "More than 15%."
+    },
+    {
+      "id": "B6",
+      "question": "What is the iMac's carbon footprint?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [2, 10],
+      "expect": null,
+      "note": "346 kg CO2e."
+    }
+  ]
+}

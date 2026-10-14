@@ -1,53 +1,105 @@
 # Session handoff: RAG Studio
 
-Written 2026-10-14 ~21:30 IST, mid-M0, because the session may hit its limit.
-A new session should read, in order: this file, `CLAUDE.md`, then the build spec
+Updated 2026-10-15 ~01:50 IST, at the end of M1. A new session should read, in
+order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
-milestones). Unlike `advanced-rag`, **Claude builds everything here**; the user
-reviews, runs and asks questions.
+milestones). **Claude builds everything here**; the user reviews, runs and asks
+questions.
 
-## Decisions the user already made (don't re-ask)
+## Rules the user set (don't re-ask, don't break)
 
-- Repo `~/Dev/RAG/rag-studio`; UI 127.0.0.1:**3100**, API 127.0.0.1:**8775** (trading uses 3000/8765); Phoenix later on 6006.
-- Local model pulls approved, each when its milestone starts: qwen3-embedding:0.6b, embeddinggemma-2, Qwen3-Reranker-0.6B (HF), Docling models, qwen3.5:4b (**already pulled** 2026-10-14 by research), gemma4:e4b (M6; research says RAM is tight, see research.md §0).
-- Git: commit PDFs + golden sets; LanceDB/caches/runs are gitignored and rebuilt.
-- Still check `ollama ps` and the trading timer before any pull or long run. Ask before committing.
+- **Never run `git commit` or push.** At a milestone's end: `git add`, update
+  this file, report neatly with every number, and end with a suggested commit
+  message. The user commits and pushes.
+- Repo `~/Dev/RAG/rag-studio`; UI 127.0.0.1:**3100**, API 127.0.0.1:**8775**
+  (trading uses 3000/8765); Phoenix later on 6006.
+- Local model pulls approved, each when its milestone starts: qwen3-embedding:0.6b,
+  EmbeddingGemma 2 (via sentence-transformers, see research §4), Qwen3-Reranker-0.6B
+  (HF), Docling models, gemma4:e4b (M6). qwen3.5:4b is already pulled.
+- Git: PDFs and test questions are committed; indexes, runs and caches are rebuilt.
+- Check `ollama ps` and `systemctl --user status trading-daily.timer` (19:17 IST)
+  before any pull or long run. Never stop the trading timers.
+- The user's own `./rag web` is usually running (dev mode, both servers
+  reload). Test against it; don't start a second copy.
 
-## M0 status
+## Decisions settled in M1 (from the audit, research.md §0)
 
-**Done (all verified):**
-- Repo, uv (Python 3.12), pnpm, `./rag` (web, health, test; ingest/eval/index/llm print their milestone).
-- Engine: `rag_studio/{paths,config,llm,health,cli}.py`. API: `web/api/{main,guard}.py` with `/api/status`, `/api/health`, `/api/documents`.
-- UI: trading's design system (copied primitives, globals.css), shell (sidebar with status rows, top bar, ⌘K), 7 pages. System Health is complete; the other pages are honest empty states (How it works lists the 13 steps with real examples).
-- Tests: `./rag test` → 23 passed (guard attacks, health with Ollama down/busy, UI contract: loopback binding, one route list).
-- `pnpm typecheck` and `pnpm lint` clean.
-- Browser QA: `docs/qa/2026-10-14-m0-shell.md` (9 findings, all fixed; 35/35 page×width checks clean).
-- Docs: `CLAUDE.md`, `docs/00-start-here.md`, `docs/01-architecture.md`, `docs/product-language.md`, `docs/research.md` (§0-8 written), `docs/research/` appendices A-C + probe scripts.
+- **The spec wins over M0 research** where they differed: qwen3-embedding:**8b**
+  on Colab is in the plan (4b optional); reranker **top 20 → top 5** first,
+  measured (top 10 only if 20 is too slow), 8B kept in 8-bit on the T4;
+  **gemma4:e4b** stays a local candidate, benchmarked alone at M6.
+- **No Ollama upgrade.** EmbeddingGemma 2's Ollama build is nvfp4 safetensors
+  needing Ollama ≥ 0.36 and does not run on Linux at any version; spec §2.2
+  already sends image embeddings through Python. Ollama stays 0.32.6.
+- **Set D (edge cases)** was added at the user's request ("extend them to push
+  the model to more edge"): 11 questions + traps T3-T5, every answer page
+  verified in the text (`scripts/find_pages.py`). D3's key was widened once
+  (p44 calls the adjusted figure plain "net income"); it is documented in the
+  question's note.
+- The user's 9 questions are Set A, pinned word for word by `tests/test_golden.py`.
 
-**M0 is complete** (2026-10-14 ~21:50 IST): `docs/research.md` §0-10 written,
-appendices A-D and probe scripts in `docs/research/`. Committed (checkpoint
-commits on `main`, local only). Next session: start M1 after the user says go.
+## M1 status: complete (staged, not committed)
 
-## Research findings that change the plan (details in docs/research.md)
+**Engine** (`rag_studio/`): parse, clean, chunk, profiles, embed, store,
+ingest, retrieve, prompt, answer, trace, eval, library, files. **API**: ask
+(SSE via `web/api/sse.py`), page image + passage boxes, golden, runs (start,
+cancel, list, get), ladder, models, indexes. **UI**: Ask (streaming, `[n]`
+chips, page preview with the passage outlined, sources, "What happened" trace,
+calm refusal state), Evaluation (start a run, live progress, history, per-question
+detail panel, the 11-row ladder), Documents (library stats). Thin scrollbars,
+set once in `globals.css`. **CLI**: `./rag ingest`, `./rag eval`.
 
-- **EmbeddingGemma 2 cannot run in Ollama on Linux** (MLX-only tags, Ollama ≥ 0.36). Plan: a sentence-transformers profile (fp32, text-only).
-- **Ollama has no rerank endpoint.** Qwen3-Reranker-0.6B via sentence-transformers `CrossEncoder`, top 10 by default; 4B fp16 on Colab; skip 8B (not better than 4B on English).
-- **qwen3.5:4b with `think:false` works** (measured): warm 37 s, cold 72 s on the 1,318-token RAG prompt; exact refusal on an unanswerable question.
-- **num_ctx overflow silently drops the START of the prompt** (HTTP 200). Detect via `prompt_eval_count` vs our own count.
-- CPU is an i5-1135G7: **4 cores / 8 threads** (not 8 cores).
-- LanceDB: default metric is squared L2 (always set cosine); built-in hybrid hides the two lists, so fuse with our own RRF (K=60); `rename_table` unsupported, so swap builds via an atomic `active.json`.
-- Docling reads the PDF text layer: "Th" (#7), footnote markers (#9) and hidden text (#13) likely survive it.
-- Evaluation: **DeepEval 4.2** (RAGAS is idle and fails to import fresh). Set `DEEPEVAL_TELEMETRY_OPT_OUT=1`, `DEEPEVAL_DISABLE_DOTENV=1`, `DEEPEVAL_HOME`, `eval_mode="llm"`, `penalize_ambiguous_claims=True`, and check verdict count == claim count ourselves (it silently dropped one in a test).
-- Tracing: own in-app trace + optional **Phoenix** sidecar (own venv, `PHOENIX_HOST=127.0.0.1 PHOENIX_ALLOW_EXTERNAL_RESOURCES=false PHOENIX_TELEMETRY_ENABLED=false`, OTLP over HTTP only; gRPC 4317 binds all interfaces regardless). Langfuse rejected.
-- Judges: temperature 0 + seed is not reproducible on CPU Ollama; repeat k=3-5 and report spread.
-- **User decisions pending (not blocking M1):** upgrade Ollama 0.32.6 → 0.40.4 (shared with trading)? gemma4:e4b vs e2b locally at M6?
+**Numbers (all measured 2026-10-15, details in `docs/ladder.md`):**
 
-## Next: M1 (baseline parity)
+| Check | Result |
+|---|---|
+| Passages | 1,190 (34/233/923), identical to `advanced-rag/outputs/chunks.jsonl` |
+| Index build | 406 s for 1,190 passages (2.9/s); a rebuild with no changes is a no-op |
+| Set A recall@5 | 8/9 (A6 at rank 45, as by hand) |
+| Set B recall@5 | 5/6 (B4 at rank 11, as by hand) |
+| Set D recall@5 | 9/11 (D6 rank 6, D9 rank 9) |
+| Set A scorecard, qwen3:1.7b, prompt v2 | PASS 10 · REFUSED 1 · WRONG 0 |
+| Same, prompt `v2-handbuilt` (byte-identical to `answer.py`) | PASS 9 · REFUSED 0 · WRONG 2, row for row with the reference, same answers |
+| Set D scorecard | PASS 8 · REFUSED 1 · WRONG 5 (all three traps answered: "Tim Cook", a made-up MacBook Air footprint, a 2031 "forecast") |
+| Determinism | Set D run twice: 14/14 answers identical |
+| Tests | `./rag test` 89 passed (2 need Ollama + the index) |
+| UI | typecheck and lint clean; QA 25/25 page×width, console clean, 6 findings fixed (`docs/qa/2026-10-15-m1-ask-evaluation.md`) |
 
-PyMuPDF + NFKC + fixed 1,000/150 chunks (1,190 chunks: iMac 34, GPO 233, GEP 923) + nomic-embed-text + exact cosine search in LanceDB + system prompt v2 + the 11-question scorecard; Ask page with SSE streaming and code-built citations; Evaluation page with runs and history. Done when Set A 8/9 and Set B 5/6 recall@5 reproduce and the qwen3:1.7b scorecard is within ±1 row of PASS 9 / REFUSED 0 / WRONG 2. Golden sets are in spec §7 → `data/golden/`.
+Ladder row 1 = runs `20261014-190323-98cc` (Sets A, B) and
+`20261014-192721-3958` (Set D). They live in `data/runs/` (gitignored); the
+numbers are in `docs/ladder.md`. If `data/` is wiped: `./rag ingest`, then
+`./rag eval --set a b --ladder 1 --label Baseline` and
+`./rag eval --set d --ladder 1 --label "Baseline: edge cases"` (~12 min).
 
-## Gotchas hit this session
+## Not done, on purpose (where it goes)
 
-- `pkill -f <pattern>` killed the Bash tool's own shell (the pattern was in its command line). Stop servers by port: `ss -ltnpH "sport = :3100"`.
-- Editing `scripts/run_web.sh` while `./rag web` runs breaks the running script (bash reads incrementally).
-- `uv sync` can stall for minutes when other uv processes hold the cache lock.
+- Two-run comparison view (spec §9.5): M2, when there is a row 2 to compare.
+- Editable test questions in the UI (§9.5): later (M8 polish); the JSON files are the source now.
+- Set C (figure question): M7, after confirming the answer from `get_drawings()`.
+- How it works interactive widgets: M3 onward, per the spec's milestone table.
+- Scrollbars in Firefox and Safari: written for both, **tested only in Chrome**.
+- Chat memory / follow-up rewriting: M5. Each Ask question is standalone now.
+
+## Next: M2 (parsing, cleaning, the injection guard)
+
+Docling 2.139 (CPU torch index, ~424 MB) as a second parser beside PyMuPDF; the
+§4 cleaning order with counts (ligatures → 0, "Th" → 0, 127 compounds intact,
+headers/footers moved to metadata with the printed page label); section paths
+and reference tagging; the injection guard (hidden text dropped, instruction-like
+passages flagged, passages wrapped as data; a crafted PDF test). T3 ("Ignore
+all previous rules…") is a live target. The Documents page inspector. Ladder
+row 2 measured; add the two-run comparison then. Ask before pulling Docling's
+models (~530 MB).
+
+## Gotchas hit so far
+
+- `pkill -f <pattern>` killed the Bash tool's own shell. Stop servers by port:
+  `ss -ltnpH "sport = :3100"`.
+- Don't edit `scripts/run_web.sh` while `./rag web` runs (bash reads it as it goes).
+- `uv sync` can stall when other uv processes hold the cache lock.
+- The dcg shell hook blocks some heredocs containing `>`-like text; use the
+  editor (Edit/Write tools) for those changes.
+- Editing an engine file while `./rag ingest`/`eval` runs is fine (the process
+  already imported it) but the run uses the old code; rerun if it matters.
+- Chrome DevTools MCP: `resize_page` fails on a maximised window; use
+  `emulate` with a viewport instead.

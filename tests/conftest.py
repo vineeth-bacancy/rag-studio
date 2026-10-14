@@ -39,3 +39,15 @@ def client():
     import main
 
     return TestClient(main.app, base_url="http://127.0.0.1:8775")
+
+
+@pytest.fixture
+def tmp_data(tmp_path, monkeypatch):
+    """Point every rebuilt folder (indexes, runs, cache) at a temporary
+    directory. The PDFs and test questions stay the real, committed ones."""
+    from rag_studio import paths, retrieve
+
+    for name in ("LANCEDB", "INDEXES", "RUNS", "CACHE", "CHAT"):
+        monkeypatch.setattr(paths, name, tmp_path / name.lower())
+    monkeypatch.setattr(retrieve, "_cache", {})
+    return tmp_path

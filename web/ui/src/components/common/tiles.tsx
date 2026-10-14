@@ -7,8 +7,20 @@ import { cn } from "@/lib/utils";
  * showing through a 1px grid gap, so this must never sit directly on
  * CardContent - its horizontal padding would show as a strip of border colour.
  */
-export function TileGrid({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cn("grid gap-px overflow-hidden rounded-lg bg-border", className)}>{children}</div>;
+export function TileGrid({
+  className,
+  style,
+  children,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("grid gap-px overflow-hidden rounded-lg bg-border", className)} style={style}>
+      {children}
+    </div>
+  );
 }
 
 export function Tile({

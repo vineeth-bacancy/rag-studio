@@ -26,29 +26,55 @@ only one implementation.
 
 ## Engine modules
 
-Present now (M0):
+Present now (M1). Each RAG step has a doc in `docs/steps/`.
 
 | Module | Job |
 |---|---|
 | `paths.py` | Every on-disk location. `RAG_STUDIO_DATA` points the engine at another folder (tests) |
-| `config.py` | Model roles (one model per role) and service addresses |
-| `llm.py` | The one Ollama client: version, installed models, loaded models. Chat and embed arrive in M1 |
+| `config.py` | Model roles (one model per role), service addresses, measured notes per model |
+| `files.py` | Atomic writes: temp file in the same folder, fsync, `os.replace` |
+| `llm.py` | The one Ollama client: version, installed and loaded models, `embed` (`truncate: false`), streamed `chat` |
+| `parse.py` | PyMuPDF extraction per 1-based page; page render to PNG; a passage's word boxes on its page |
+| `clean.py` | NFKC (M2 adds the full cleaning order) |
+| `chunk.py` | The baseline fixed-size chunker, defect kept; each passage stores its character span |
+| `profiles.py` | Index profiles: parser + cleaner + chunker + embedding model, prefixes, dimensions, metric |
+| `embed.py` | The embedder for a profile; refuses a missing model or a different digest |
+| `store.py` | LanceDB: one table per build, atomic pointer switch, exact cosine search, build history |
+| `ingest.py` | parse → clean → chunk → embed → store, incremental by content hash, a manifest per build |
+| `retrieve.py` | Opens a profile's active build; refuses a build made with another setup; dense search |
+| `prompt.py` | Versioned system prompts (v2, v2-handbuilt) with sha256; the context block; truncation check |
+| `answer.py` | The one answering path: events stage → ready → delta → done/error; citations built by code |
+| `trace.py` | The in-app trace: each finished step with its duration |
+| `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time), the ladder |
+| `library.py` | The PDFs, their titles, and what the active index holds of each |
 | `health.py` | System Health: every check returns a status from one vocabulary and never raises |
-| `cli.py` | Terminal views behind `./rag` |
+| `cli.py` | Terminal views behind `./rag`: health, ingest, eval |
 
-Planned, each arriving with its milestone: `parse`, `clean`, `structure`, `guard`,
-`chunk`, `context`, `embed`, `store`, `retrieve`, `rewrite`, `agent`, `rerank`,
-`prompt`, `answer`, `vision`, `judge`, `eval`, `trace`.
+Planned, each arriving with its milestone: `structure`, `guard`, `context`,
+`rewrite`, `agent`, `rerank`, `vision`, `judge`.
 
-## API surface (M0)
+## API surface (M1)
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/status` | What the sidebar polls: is the AI up, which answer model, is another app's model loaded, document count, index built |
-| `GET /api/health` | The full System Health report: sections of checks, installed and loaded models, roles |
-| `GET /api/documents` | The PDF library (file and size; pages and parser views arrive in M1-M2) |
+| `GET /api/status` | What the sidebar polls: AI up, answer model, another app's model loaded, documents, the active index |
+| `GET /api/health` | The full System Health report |
+| `GET /api/models` | Installed answer models with measured notes |
+| `GET /api/documents` | The PDF library: titles, pages, passages, near-empty pages |
+| `GET /api/documents/{doc}/pages/{n}/image?dpi=` | The page as PNG, cached by the PDF's content hash |
+| `GET /api/documents/{doc}/pages/{n}/boxes?start=&end=` | A passage's lines on its page, in 0..1 coordinates |
+| `GET /api/indexes` | Each profile and its active build's manifest |
+| `POST /api/ask` | One question as server-sent events (`web/api/sse.py`) |
+| `GET /api/golden` | The test-question sets |
+| `GET /api/eval/runs`, `GET /api/eval/runs/{id}` | Run history; one run with every question |
+| `POST /api/eval/runs`, `POST /api/eval/runs/{id}/cancel` | Start a run in the background (409 if one is running); cancel it after the current question |
+| `GET /api/eval/ladder` | The 11 ladder rows, filled from tagged runs |
 
 Interactive schema: http://127.0.0.1:8775/api/_docs while the app is running.
+
+A document is named only by `doc_id` and resolved against the files on disk
+(`library.pdf_path`); a run only by an id matching `YYYYMMDD-HHMMSS-xxxx`. No
+path a browser sends is ever opened.
 
 ## Security model
 
@@ -78,17 +104,25 @@ The model is *reachability*, as in the trading app:
 |---|---|---|
 | `data/pdfs/` | yes | The source PDFs |
 | `data/golden/` | yes | Test questions with verified answer pages |
-| `data/lancedb/` | no | One table per index profile build, plus an atomically written pointer to the active one |
+| `data/lancedb/` | no | One LanceDB table per index build |
+| `data/indexes/` | no | Each profile's active-build pointer (= its manifest), written atomically, and the build history |
 | `data/cache/` | no | Parsed pages, context lines, figure descriptions, keyed by content hash |
 | `data/runs/` | no | Evaluation runs with their full configuration |
 | `data/chat/` | no | Conversations, one JSON file each |
 | `~/.local/state/rag-studio/` | no (outside repo) | Colab token and connection, mode 0600 |
 
-## Streaming (M1)
+## Streaming
 
 Answers stream as server-sent events: `stage` per completed step, `ready` with
-everything code-built (sources, citation map), `delta` per piece of model text,
-then `done` or `error`. Responses carry `Cache-Control: no-cache, no-transform`
-and `X-Accel-Buffering: no`, and a heartbeat comment every 15 s keeps the Next
-rewrite proxy (330 s idle timeout) from dropping a slow CPU answer. FastAPI
-0.143 has SSE built in (`fastapi.sse.EventSourceResponse`).
+everything code-built (sources, the prompt budget), `delta` per piece of model
+text, then `done` or `error`. `web/api/sse.py` runs the engine generator in a
+thread and writes `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering:
+no` and a `: ping` comment after 15 s of silence; the Next rewrite proxy
+(330 s idle timeout) neither gzips nor drops it. FastAPI's own
+`EventSourceResponse` is not used: it sets `Cache-Control: no-cache` itself and
+a route cannot replace it, only add a second header. Measured in the browser:
+the sources arrive within 0.5 s, before the model starts.
+
+Evaluation runs do not stream. A run saves itself after every question and the
+page polls it every 2 s while it runs, so a reload or a second tab shows the
+same progress.

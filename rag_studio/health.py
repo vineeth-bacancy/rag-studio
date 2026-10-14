@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from rag_studio import __version__, paths
+from rag_studio import __version__, library, paths, profiles, store
 from rag_studio.config import OLLAMA_URL, ROLES
 from rag_studio.llm import OllamaClient, OllamaUnavailable, same_model
 
@@ -82,13 +82,8 @@ def _dir_size(path: Path) -> int:
 
 
 def documents() -> list[dict[str, Any]]:
-    """The PDFs on disk. `doc_id` is the file stem, as everywhere else."""
-    if not paths.PDFS.is_dir():
-        return []
-    return [
-        {"doc_id": p.stem, "file": p.name, "bytes": p.stat().st_size}
-        for p in sorted(paths.PDFS.glob("*.pdf"))
-    ]
+    """The PDFs on disk, with what the active index holds of each."""
+    return library.documents()
 
 
 def ollama_snapshot(client: OllamaClient | None = None) -> dict[str, Any]:
@@ -206,14 +201,33 @@ def _library_checks() -> list[Check]:
                           "No PDFs found. Add PDFs to the library to ask questions.",
                           technical={"Folder": str(paths.PDFS)})
 
-    if paths.LANCEDB.is_dir() and any(paths.LANCEDB.iterdir()):
-        index_check = Check("indexes", "healthy", "Indexes", "Search indexes are present.",
-                            technical={"Folder": str(paths.LANCEDB)})
-    else:
-        index_check = Check("indexes", "info", "Indexes",
-                            "No search index yet. Build one to start asking questions.",
-                            fix="./rag ingest")
+    index_check = _index_check(profiles.DEFAULT)
     return [doc_check, index_check]
+
+
+def _index_check(profile_id: str) -> Check:
+    """The active build opens, and holds as many passages as its manifest says."""
+    manifest = store.active_manifest(profile_id)
+    if manifest is None:
+        return Check("indexes", "info", "Indexes",
+                     "No search index yet. Build one to start asking questions.",
+                     fix="./rag ingest")
+    tech = {"Profile": manifest["profile"], "Table": manifest["table"],
+            "Built": manifest["built_at"], "Embedding": manifest["embedding"]["model"]}
+    try:
+        rows = store.open_table(manifest["table"]).count_rows()
+    except Exception as e:  # noqa: BLE001 - any failure to open is the finding
+        return Check("indexes", "needs_attention", "Indexes",
+                     "The search index could not be opened. Rebuild it.",
+                     fix="./rag ingest --force", technical=tech | {"Error": type(e).__name__})
+    if rows != manifest["rows"]:
+        return Check("indexes", "needs_attention", "Indexes",
+                     f"The search index holds {rows:,} passages but should hold {manifest['rows']:,}. Rebuild it.",
+                     fix="./rag ingest --force", technical=tech)
+    docs = len(manifest["documents"])
+    return Check("indexes", "healthy", "Indexes",
+                 f"{manifest['label']} index: {rows:,} passages from {_plural(docs, 'document')}.",
+                 technical=tech | {"Rows": rows})
 
 
 def _remote_checks() -> list[Check]:
@@ -258,11 +272,15 @@ def status() -> dict[str, Any]:
     ours = {r.model for r in ROLES if r.model}
     busy = [m["name"] for m in snap["resident"]
             if not any(same_model(m["name"], o) for o in ours)]
+    manifest = store.active_manifest(profiles.DEFAULT)
     return {
         "ai": {"up": snap["up"], "backend": "local", "answer_model": answer["model"],
                "answer_model_installed": answer["installed"], "busy_with": busy,
                "error": snap["error"]},
-        "documents": len(documents()),
-        "indexed": paths.LANCEDB.is_dir() and any(paths.LANCEDB.iterdir()),
+        "documents": len(library.pdf_files()),
+        "indexed": manifest is not None,
+        "index": ({"profile": manifest["profile"], "label": manifest["label"],
+                   "rows": manifest["rows"], "built_at": manifest["built_at"]}
+                  if manifest else None),
         "version": __version__,
     }

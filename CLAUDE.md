@@ -30,11 +30,13 @@ Always use `./rag`; it resolves the venv.
 
 ```
 ./rag web       # API on 127.0.0.1:8775, UI on 127.0.0.1:3100 (dev mode, both reload)
+./rag ingest    # build the baseline index (≈7 min; a no-op when nothing changed; --force)
+./rag eval      # the scorecard (--set a b d, --mode retrieval, --model, --prompt, --ladder ROW, --tag RUN_ID)
 ./rag health    # Ollama, models per role, documents, indexes, memory, disk
 ./rag test      # pytest
 ```
 
-`ingest`, `eval` (M1), `index`, `llm` (M4) print the milestone that adds them.
+`index` and `llm` (M4) print the milestone that adds them.
 
 ## Engineering rules
 
@@ -111,3 +113,22 @@ Warning / Needs attention / Unavailable.
 - The request guard is pure ASGI. `BaseHTTPMiddleware` buffers streams.
 - Don't edit `scripts/run_web.sh` while `./rag web` is running: bash reads the
   script as it executes it.
+- SSE goes through `web/api/sse.py`, not FastAPI's `EventSourceResponse`: that
+  one hardcodes `Cache-Control: no-cache` and a route can only add a second
+  header, while `no-transform` is what stops Next gzipping the stream.
+- Table rows with a toggle are tinted by `has-aria-expanded:bg-muted/50` in
+  `ui/table.tsx`; to change an open row's tint, override that same variant.
+- A child component imported only by a client page needs no `"use client"`;
+  adding it makes the TS plugin warn about every function prop.
+
+## Engine gotchas (learned in M1)
+
+- `prompt_eval_count` counts the whole prompt even when Ollama reuses a cached
+  prefix, so characters/tokens > 8 reliably means the start was dropped.
+- Whitespace in a system prompt changes small-model answers: `v2` vs
+  `v2-handbuilt` (one blank line) move two Set A rows. Record the prompt hash.
+- A rebuild of the baseline index reuses every vector by content hash; only a
+  changed passage or a new embedding digest costs embedding time.
+- Answer pages in a test set must list **every** page that states the answer,
+  and a key can be wrong: D3's was widened when p44 turned out to call the
+  adjusted figure plain "net income". Check the text before blaming the model.

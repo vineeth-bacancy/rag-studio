@@ -4,6 +4,12 @@ The evidence behind `docs/research.md`. Each report was written by a research
 pass for M0 and is kept unedited, so every table row still carries its status
 label and source.
 
+**Where a report and `docs/research.md` differ, `research.md` wins.** The
+2026-10-15 audit (research.md §0) brought three recommendations back to the
+build spec: qwen3-embedding:8b on Colab (report B suggested 4b), the reranker
+at top 20 with 8B kept (report B: top 10, skip 8B), and gemma4:e4b as a local
+candidate (report A: skip it).
+
 | Report | Covers |
 |---|---|
 | [A-ollama-llms.md](A-ollama-llms.md) | Ollama API on 0.32.6 (think, images, embed fields, num_ctx truncation, rerank), qwen3.5:4b measured live, Gemma 4 vs Qwen 3.5 |
