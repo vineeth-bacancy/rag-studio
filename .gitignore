@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Rebuildable data. The PDFs (data/pdfs/) and golden sets (data/golden/) are
+# committed; everything derived from them is rebuilt with `./rag ingest`.
+data/lancedb/
+data/cache/
+data/runs/
+data/chat/
+data/uploads/
+data/parsed/
+data/jobs/
+data/settings.json
+
+# Tracing (Phoenix stores its own database)
+.phoenix/
+
+# Local tooling output
+outputs/
+graphify-out/
+.env*

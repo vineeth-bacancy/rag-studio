@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# =============================================================================
+# RAG Studio: the single entry point.
+#
+# Works from any directory and needs no environment setup: it always uses the
+# project's own venv, so a command behaves the same in any terminal.
+# =============================================================================
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PY="$ROOT/.venv/bin/python"
+
+if [[ ! -x "$PY" ]]; then
+    echo "Error: the Python environment is missing at $PY" >&2
+    # Dependencies are declared once, in pyproject.toml, and pinned in uv.lock.
+    echo "Run: cd $ROOT && uv sync" >&2
+    exit 1
+fi
+
+cmd="${1:-help}"
+shift || true
+
+not_yet() {
+    echo "'./rag $1' arrives in $2. See docs/00-start-here.md for the milestone plan."
+    exit 2
+}
+
+case "$cmd" in
+    web)     exec bash "$ROOT/scripts/run_web.sh" "$@" ;;
+    health)  exec "$PY" -m rag_studio.cli health "$@" ;;
+    ingest)  not_yet ingest M1 ;;
+    index)   not_yet index M4 ;;
+    eval)    not_yet eval M1 ;;
+    llm)     not_yet llm M4 ;;
+
+    test)
+        if ! "$PY" -c "import pytest" 2>/dev/null; then
+            echo "Error: pytest is not installed (it is in the dev group)." >&2
+            echo "Run: cd $ROOT && uv sync" >&2
+            exit 1
+        fi
+        cd "$ROOT" && exec "$PY" -m pytest "$@"
+        ;;
+
+    help|--help|-h)
+        cat <<'EOF'
+RAG Studio - cited answers from your PDF reports, and how RAG works
+
+  ./rag web            open the app (UI on http://localhost:3100)
+  ./rag health         check Ollama, models, documents, indexes and this computer
+  ./rag test           run the test suite
+
+Arriving with later milestones:
+  ./rag ingest         parse, chunk and index the documents         (M1)
+  ./rag eval           run the golden questions and score them      (M1)
+  ./rag index          build and compare index profiles             (M4)
+  ./rag llm            connect a Colab GPU                          (M4)
+EOF
+        ;;
+    *)
+        echo "Error: unknown command '$cmd'." >&2
+        echo "Run: ./rag help" >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,36 @@
+[project]
+name = "rag-studio"
+version = "0.1.0"
+description = "A local app that answers questions about PDF reports with page citations, and shows how every RAG step works."
+requires-python = ">=3.12,<3.13"
+# Dependencies arrive with the milestone that needs them, so every package here
+# is one the code actually imports. Declared once, here; pinned in uv.lock.
+dependencies = [
+    "fastapi>=0.143.1",
+    "uvicorn[standard]>=0.54.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    # Starlette 1.8's TestClient prefers httpx2 and warns on httpx.
+    "httpx2>=2.13.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "rag_studio"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests that need Ollama or a Colab runtime carry these markers and skip cleanly
+# when the service is absent (see tests/conftest.py).
+markers = [
+    "ollama: needs a reachable local Ollama",
+    "colab: needs a connected Colab runtime",
+]
