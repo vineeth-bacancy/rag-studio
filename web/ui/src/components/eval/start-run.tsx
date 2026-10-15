@@ -7,12 +7,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api, type AnswerModel, type GoldenSet, type RunBrief, type RunMode } from "@/lib/api";
+import {
+  api,
+  type AnswerModel,
+  type GoldenSet,
+  type IndexProfileRow,
+  type PromptVersion,
+  type RunBrief,
+  type RunMode,
+} from "@/lib/api";
 
 /**
- * Start a run: which test questions, whether the model answers them, and
- * which model. The time estimate is only shown when a past run with the same
- * model measured it - never guessed.
+ * Start a run: which test questions, which index they search, whether the
+ * model answers them, which model and which prompt. The time estimate is only
+ * shown when a past run with the same model measured it - never guessed.
  */
 export function StartRun({
   sets,
@@ -26,12 +34,20 @@ export function StartRun({
   onStarted: (id: string) => void;
 }) {
   const { data: models } = useSWR<{ default: string; answer_models: AnswerModel[] }>("/models");
+  const { data: indexes } = useSWR<{ profiles: IndexProfileRow[] }>("/indexes");
+  const { data: prompts } = useSWR<{ default: string; versions: PromptVersion[] }>("/prompts");
   const [chosen, setChosen] = useState<string[]>(["set-a"]);
   const [mode, setMode] = useState<RunMode>("answer");
   const [model, setModel] = useState<string | null>(null);
+  const [profile, setProfile] = useState<string>("baseline");
+  const [prompt, setPrompt] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
   const pickedModel = model ?? models?.default ?? null;
+  const pickedPrompt = prompt ?? prompts?.default ?? null;
+  const profileLabels = Object.fromEntries((indexes?.profiles ?? []).map((p) => [p.id, p.label]));
+  const unbuilt = (indexes?.profiles ?? []).filter((p) => !p.active);
+  const pickedProfile = indexes?.profiles.find((p) => p.id === profile);
   const note = models?.answer_models.find((m) => m.name === pickedModel)?.note;
   const scoredCount = sets
     .filter((s) => chosen.includes(s.id) && s.scored)
@@ -50,7 +66,13 @@ export function StartRun({
   async function start() {
     setStarting(true);
     try {
-      const { id } = await api.startRun({ sets: chosen, mode, model: mode === "answer" ? pickedModel : null });
+      const { id } = await api.startRun({
+        sets: chosen,
+        mode,
+        model: mode === "answer" ? pickedModel : null,
+        profile,
+        ...(mode === "answer" && pickedPrompt ? { prompt: pickedPrompt } : {}),
+      });
       toast.success("Run started. Results appear below as each question finishes.");
       onStarted(id);
     } catch (e) {
@@ -65,7 +87,7 @@ export function StartRun({
       <CardHeader>
         <CardTitle as="h2">Run evaluation</CardTitle>
         <CardDescription>
-          Ask every test question with the current setup and score each answer. Runs use the CPU fully, so one
+          Ask every test question with the chosen setup and score each answer. Runs use the CPU fully, so one
           runs at a time.
         </CardDescription>
       </CardHeader>
@@ -125,6 +147,32 @@ export function StartRun({
           </div>
         </fieldset>
 
+        <div className="space-y-1.5">
+          <label htmlFor="run-index" className="text-sm font-medium">
+            Index
+          </label>
+          <Select items={profileLabels} value={profile} onValueChange={(v) => setProfile(v as string)}>
+            <SelectTrigger id="run-index" className="w-full sm:w-72">
+              <SelectValue placeholder="Choose an index" />
+            </SelectTrigger>
+            <SelectContent>
+              {indexes?.profiles.map((p) => (
+                <SelectItem key={p.id} value={p.id} disabled={!p.active}>
+                  {p.label}
+                  {!p.active ? " · not built yet" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {pickedProfile && <p className="max-w-prose text-xs text-pretty text-muted-foreground">{pickedProfile.description}</p>}
+          {unbuilt.map((p) => (
+            <p key={p.id} className="text-xs text-muted-foreground">
+              {p.label} is not built yet. Run:{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono">./rag ingest --profile {p.id}</code>
+            </p>
+          ))}
+        </div>
+
         {mode === "answer" && (
           <div className="space-y-1.5">
             <label htmlFor="run-model" className="text-sm font-medium">
@@ -147,9 +195,39 @@ export function StartRun({
           </div>
         )}
 
+        {mode === "answer" && (
+          <div className="space-y-1.5">
+            <label htmlFor="run-prompt" className="text-sm font-medium">
+              Prompt
+            </label>
+            <Select value={pickedPrompt} onValueChange={(v) => setPrompt(v as string)}>
+              <SelectTrigger id="run-prompt" className="w-full sm:w-72">
+                <SelectValue placeholder="Choose a prompt version" />
+              </SelectTrigger>
+              <SelectContent>
+                {prompts?.versions.map((v) => (
+                  <SelectItem key={v.version} value={v.version}>
+                    {v.version}
+                    {v.version === prompts.default ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              The system prompt is versioned to the byte: one blank line changed two answers. Every run records which
+              one it used.
+            </p>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
           <p className="text-xs text-muted-foreground">{estimate}</p>
-          <Button onClick={start} disabled={active || starting || chosen.length === 0 || (mode === "answer" && !pickedModel)}>
+          <Button
+            onClick={start}
+            disabled={
+              active || starting || chosen.length === 0 || (mode === "answer" && !pickedModel) || !pickedProfile?.active
+            }
+          >
             <Play aria-hidden />
             {active ? "A run is in progress" : starting ? "Starting..." : "Run evaluation"}
           </Button>

@@ -24,7 +24,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Iterator
 
-from rag_studio import profiles
+from rag_studio import guard, profiles
 from rag_studio.config import OLLAMA_URL, role_model
 from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
 from rag_studio.prompt import (DEFAULT_VERSION, REFUSAL, build_messages, estimate_tokens,
@@ -82,9 +82,12 @@ def citations(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _source(hit: dict[str, Any], n: int) -> dict[str, Any]:
     return {"n": n, "rank": hit["rank"], "chunk_id": hit["chunk_id"], "doc_id": hit["doc_id"],
-            "page": hit["page"], "section_path": hit.get("section_path"), "type": hit["type"],
-            "score": round(hit["score"], 4), "text": hit["text"],
-            "char_start": hit["char_start"], "char_end": hit["char_end"]}
+            "page": hit["page"], "page_label": hit.get("page_label"),
+            "section_path": hit.get("section_path"), "type": hit["type"],
+            "kind": hit.get("kind") or "body", "score": round(hit["score"], 4), "text": hit["text"],
+            "char_start": hit["char_start"], "char_end": hit["char_end"],
+            # Checked live, so a passage from any index is screened the same way.
+            "flags": guard.instruction_flags(hit["text"])}
 
 
 def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
@@ -108,8 +111,16 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
                   method="dense", metric="cosine", exact=True, k=k)
         yield "stage", trace.steps[-1].as_dict()
 
-        stage = "prompt"
+        stage = "guard"
+        t0 = time.perf_counter()
         sources = [_source(h, n) for n, h in enumerate(hits, start=1)]
+        asked = guard.instruction_flags(question)
+        flagged = [s["n"] for s in sources if s["flags"]]
+        trace.add("guard", _guard_label(asked, flagged), (time.perf_counter() - t0) * 1000,
+                  question_flags=asked, flagged_passages=flagged)
+        yield "stage", trace.steps[-1].as_dict()
+
+        stage = "prompt"
         t0 = time.perf_counter()
         messages = build_messages(question, sources, prompt_version)
         budget = {"estimated_tokens": estimate_tokens(messages), "chars": prompt_chars(messages),
@@ -178,6 +189,17 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
     except Exception as e:  # noqa: BLE001 - the stream must end with a reason, not a dropped socket
         yield "error", {"stage": stage, "error": str(e) or type(e).__name__,
                         "trace": trace.as_list()}
+
+
+def _guard_label(asked: list[dict[str, Any]], flagged: list[int]) -> str:
+    """What the guard found, in plain words (docs/product-language.md)."""
+    if asked and flagged:
+        return f"Found instructions in the question and in {len(flagged)} passage(s)"
+    if asked:
+        return "Found an instruction in the question; the rules still apply"
+    if flagged:
+        return f"Found instruction-like text in {len(flagged)} passage(s)"
+    return "Checked the question and passages for instructions"
 
 
 def answer(question: str, **kwargs: Any) -> dict[str, Any]:

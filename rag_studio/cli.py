@@ -43,7 +43,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     last = {"pct": -1}
 
     def progress(stage: str, info: dict) -> None:
-        if stage == "parse":
+        if stage == "clean":
+            print(f"Cleaning {info['doc_id']} ({info['parser']})", flush=True)
+        elif stage == "docling_start":
+            print(f"  Docling is converting {info['doc_id']}: about 3 s per page on this CPU", flush=True)
+        elif stage == "docling_done":
+            print(f"  Docling converted {info['pages']} pages ({info['seconds']:.0f} s)", flush=True)
+        elif stage == "parse":
             print(f"Parsed {info['documents']} documents, {info['pages']} pages ({info['seconds']:.1f} s)")
         elif stage == "chunk":
             print(f"Cut {info['passages']} passages ({info['seconds']:.1f} s)")
@@ -101,7 +107,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     chosen = [f"set-{s}" if not s.startswith("set-") else s for s in args.set] or list(sets)
     ladder = {"row": args.ladder, "label": args.label or f"Row {args.ladder}"} if args.ladder else None
     spec = ev.RunSpec(sets=chosen, mode=args.mode, k=args.k, model=args.model,
-                      prompt_version=args.prompt, label=args.label, ladder=ladder)
+                      profile=args.profile, prompt_version=args.prompt, label=args.label, ladder=ladder)
 
     def on_result(run: dict, res: dict) -> None:
         done, total = run["progress"]["done"], run["progress"]["total"]
@@ -115,7 +121,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if res["error"]:
             print(f"        error: {res['error']}")
 
-    print(f"Run: {', '.join(chosen)} · {args.mode} · top {args.k} · prompt {args.prompt}"
+    print(f"Run: {', '.join(chosen)} · {args.profile} · {args.mode} · top {args.k} · prompt {args.prompt}"
           + (f" · {args.model}" if args.model else ""))
     try:
         run = ev.execute(spec, on_result=on_result)
@@ -156,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", help="answer model (default: the Answer role's model)")
     p.add_argument("--k", type=int, default=5, help="passages per answer (default: %(default)s)")
     p.add_argument("--prompt", default="v2", help="system prompt version (default: %(default)s)")
-    p.add_argument("--label", help="a name for this run")
+    p.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES),
+                   help="which index to search (default: %(default)s)")
+    p.add_argument("--label", help="a name for this run (with --ladder: the row's variant name)")
     p.add_argument("--ladder", type=int, metavar="ROW", help="record this run as a ladder row")
     p.add_argument("--tag", metavar="RUN_ID", help="with --ladder: record a finished run as a ladder row")
     p.set_defaults(func=cmd_eval)

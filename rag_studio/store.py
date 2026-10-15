@@ -26,9 +26,12 @@ from rag_studio.profiles import IndexProfile
 
 KEEP_BUILDS = 2
 
-# What the UI and the prompt read back. `vector` stays in the table.
+# What the UI and the prompt read back. `vector` stays in the table. Builds
+# made before M2 lack the last three; a read fills them with their defaults.
 COLUMNS = ["chunk_id", "doc_id", "page", "section_path", "type", "text", "context",
-           "content_hash", "parser", "chunker", "char_start", "char_end"]
+           "content_hash", "parser", "chunker", "char_start", "char_end",
+           "kind", "page_label", "flags"]
+DEFAULTS: dict[str, Any] = {"kind": "body", "page_label": None, "flags": []}
 
 
 def schema(dimensions: int) -> pa.Schema:
@@ -46,7 +49,16 @@ def schema(dimensions: int) -> pa.Schema:
         pa.field("chunker", pa.string(), nullable=False),
         pa.field("char_start", pa.int32(), nullable=False),
         pa.field("char_end", pa.int32(), nullable=False),
+        pa.field("kind", pa.string(), nullable=False),         # body | toc | references
+        pa.field("page_label", pa.string()),                   # the printed page number
+        pa.field("flags", pa.list_(pa.string()), nullable=False),  # instruction-like phrases (guard)
     ])
+
+
+def columns(table: Any) -> list[str]:
+    """The readable columns this build actually has."""
+    names = set(table.schema.names)
+    return [c for c in COLUMNS if c in names]
 
 
 def connect() -> Any:
@@ -122,9 +134,16 @@ def search_dense(table: Any, vector: list[float], k: int) -> list[dict[str, Any]
     number (spec §6).
     """
     rows = (table.search(vector).distance_type("cosine").bypass_vector_index()
-            .limit(k).select([*COLUMNS, "_distance"]).to_list())
+            .limit(k).select([*columns(table), "_distance"]).to_list())
     out = []
     for rank, r in enumerate(rows, start=1):
-        r = {c: r.get(c) for c in COLUMNS} | {"rank": rank, "score": 1.0 - float(r["_distance"])}
+        r = {c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"rank": rank, "score": 1.0 - float(r["_distance"])}
         out.append(r)
     return out
+
+
+def get_passage(table: Any, chunk_id: str) -> dict[str, Any] | None:
+    """One passage by id, or None."""
+    safe = chunk_id.replace("'", "''")
+    rows = table.search().where(f"chunk_id = '{safe}'").select(columns(table)).limit(1).to_list()
+    return {c: rows[0].get(c, DEFAULTS.get(c)) for c in COLUMNS} if rows else None

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, FileText } from "lucide-react";
+import { AlertTriangle, ChevronDown, FileText } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,11 @@ import { NO_DATA } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const TYPE: Record<Source["type"], string> = { text: "Text", table: "Table", figure: "Figure" };
+/** Content that matches many questions and answers few: tagged so it can be recognised. */
+const KIND: Partial<Record<Source["kind"], { label: string; hint: string }>> = {
+  toc: { label: "Contents page", hint: "A table of contents: it names every section, so it matches many questions." },
+  references: { label: "Reference list", hint: "A bibliography: titles full of topic words, but no findings." },
+};
 
 /**
  * Every passage the model was given, in the order it saw them, and whether
@@ -20,8 +25,11 @@ export function Sources({
   cited,
   docs,
   onOpen,
+  promptVersion,
 }: {
   sources: Source[];
+  /** The prompt the model got: v3 fences passages off as data. */
+  promptVersion?: string;
   /** null while the answer is still being written: not known yet. */
   cited: number[] | null;
   docs: DocumentFile[] | undefined;
@@ -34,7 +42,14 @@ export function Sources({
       </h3>
       <ol className="space-y-2">
         {sources.map((s) => (
-          <SourceRow key={s.chunk_id} source={s} cited={cited === null ? null : cited.includes(s.n)} docs={docs} onOpen={onOpen} />
+          <SourceRow
+            key={s.chunk_id}
+            source={s}
+            cited={cited === null ? null : cited.includes(s.n)}
+            docs={docs}
+            onOpen={onOpen}
+            fenced={promptVersion === "v3"}
+          />
         ))}
       </ol>
     </section>
@@ -46,8 +61,10 @@ function SourceRow({
   cited,
   docs,
   onOpen,
+  fenced,
 }: {
   source: Source;
+  fenced: boolean;
   cited: boolean | null;
   docs: DocumentFile[] | undefined;
   onOpen: (source: Source) => void;
@@ -68,15 +85,34 @@ function SourceRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <p className="min-w-0 truncate text-sm font-medium">{docTitle(s.doc_id, docs)}</p>
-            <p className="text-xs text-muted-foreground tabular-nums">page {s.page}</p>
+            <p className="text-xs text-muted-foreground tabular-nums">
+              page {s.page}
+              {s.page_label && s.page_label !== String(s.page) && <span> (printed {s.page_label})</span>}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="tabular-nums">rank {s.rank}</span>
             <span aria-hidden>·</span>
             <span>Section {s.section_path ?? NO_DATA}</span>
             <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">{TYPE[s.type]}</Badge>
+            {KIND[s.kind] && (
+              <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal" title={KIND[s.kind]?.hint}>
+                {KIND[s.kind]?.label}
+              </Badge>
+            )}
             {cited === false && <span>not cited</span>}
           </div>
+          {s.flags?.length > 0 && (
+            <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span>
+                Instruction-like text: &ldquo;{s.flags[0].match}&rdquo;.{" "}
+                {fenced
+                  ? "The prompt told the model that passages are data, never instructions."
+                  : "This prompt version does not fence passages off; prompt v3 does."}
+              </span>
+            </p>
+          )}
           <p className={cn("text-xs leading-relaxed text-muted-foreground", !open && "line-clamp-2")}>{s.text}</p>
         </div>
       </div>

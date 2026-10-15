@@ -1,9 +1,12 @@
 "use client";
 
+import { useRef, useState } from "react";
 import useSWR from "swr";
-import { FileText, FileUp } from "lucide-react";
+import { FileText, FileUp, ScanSearch } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageInspector } from "@/components/documents/inspector";
 import { PageHeader } from "@/components/common/page-header";
 import { CardSkeleton, EmptyState, ErrorState } from "@/components/common/states";
 import type { DocumentFile } from "@/lib/api";
@@ -12,9 +15,14 @@ import { bytes, num } from "@/lib/format";
 
 export default function DocumentsPage() {
   const { data, error, isLoading, mutate } = useSWR<{ documents: DocumentFile[] }>("/documents");
+  const [inspect, setInspect] = useState<{ docId: string; page: number } | null>(null);
+  const inspectorRef = useRef<HTMLDivElement>(null);
+  const docs = data?.documents ?? [];
+  // The inspector opens on the first document until one is chosen.
+  const target = inspect ?? (docs[0] ? { docId: docs[0].doc_id, page: 1 } : null);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <PageHeader href="/documents" />
 
       {error ? (
@@ -50,6 +58,17 @@ export default function DocumentsPage() {
                     <Tile label="Passages" value={num(d.passages)} />
                     <Tile label="Size" value={bytes(d.bytes)} />
                   </TileGrid>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setInspect({ docId: d.doc_id, page: 1 });
+                      inspectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                  >
+                    <ScanSearch aria-hidden />
+                    Inspect pages
+                  </Button>
                   <p className="text-xs text-muted-foreground">
                     {d.indexed
                       ? d.near_empty_pages && d.near_empty_pages.length > 0
@@ -64,10 +83,16 @@ export default function DocumentsPage() {
         </ul>
       )}
 
-      <EmptyState
-        title="The page inspector arrives in M2"
-        description="Any page of any document, rendered next to the text each parser extracted, with defects highlighted: running headers, split words, ligatures, the missing 'h' in 'Th', and hidden text."
-      />
+      {target && (
+        <div ref={inspectorRef} className="scroll-mt-20">
+          <PageInspector
+            docs={docs}
+            docId={target.docId}
+            page={target.page}
+            onChange={(docId, page) => setInspect({ docId, page })}
+          />
+        </div>
+      )}
     </div>
   );
 }

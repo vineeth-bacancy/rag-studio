@@ -19,9 +19,9 @@ def test_event_order_and_citations(setup):
     events = list(answer.ask("How many depository libraries did GPO staff visit?",
                              retriever=r, client=fake))
     names = [e for e, _ in events]
-    assert names[:4] == ["stage", "stage", "stage", "ready"]
+    assert names[:5] == ["stage", "stage", "stage", "stage", "ready"]
     assert names[-2:] == ["stage", "done"] and "delta" in names
-    assert [d["id"] for e, d in events if e == "stage"] == ["embed", "search", "prompt", "generate"]
+    assert [d["id"] for e, d in events if e == "stage"] == ["embed", "search", "guard", "prompt", "generate"]
     done = events[-1][1]
     assert done["answer"] == "GPO staff visited 166 libraries [1][2]. Also [9]."
     assert done["citations"]["valid"] == [1, 2] and done["citations"]["invalid"] == [9]
@@ -52,7 +52,7 @@ def test_empty_question_is_an_error_not_a_crash():
 
 
 def test_api_streams_with_no_transform(client, monkeypatch):
-    def fake_ask(question, k=5):
+    def fake_ask(question, k=5, **_):
         yield "stage", {"id": "embed"}
         yield "ready", {"sources": []}
         yield "delta", {"text": "Hi"}
@@ -70,7 +70,7 @@ def test_api_streams_with_no_transform(client, monkeypatch):
 
 
 def test_api_turns_an_engine_crash_into_an_error_event(client, monkeypatch):
-    def broken(question, k=5):
+    def broken(question, k=5, **_):
         yield "stage", {"id": "embed"}
         raise RuntimeError("boom")
 

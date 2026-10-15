@@ -26,7 +26,7 @@ only one implementation.
 
 ## Engine modules
 
-Present now (M1). Each RAG step has a doc in `docs/steps/`.
+Present now (M2). Each RAG step has a doc in `docs/steps/`.
 
 | Module | Job |
 |---|---|
@@ -34,41 +34,48 @@ Present now (M1). Each RAG step has a doc in `docs/steps/`.
 | `config.py` | Model roles (one model per role), service addresses, measured notes per model |
 | `files.py` | Atomic writes: temp file in the same folder, fsync, `os.replace` |
 | `llm.py` | The one Ollama client: version, installed and loaded models, `embed` (`truncate: false`), streamed `chat` |
-| `parse.py` | PyMuPDF extraction per 1-based page; page render to PNG; a passage's word boxes on its page |
-| `clean.py` | NFKC (M2 adds the full cleaning order) |
+| `parse.py` | PyMuPDF: plain text per 1-based page (baseline); the layout reader (lines, characters, invented spaces) whose lines rebuild `get_text()` exactly; ligature glyph names read from the fonts; bookmarks; page render; a passage's boxes on its page (exact span, or aligned by words for cleaned text) |
+| `parse_docling.py` | Docling: converts a PDF once (cached by content and options), then its body text through the cleaning rules, reusing the PyMuPDF path's hidden text, page labels and hyphen decisions |
+| `guard.py` | The injection guard: hidden text found by drawing the page with and without its text; instruction-like phrases flagged |
+| `clean.py` | NFKC (baseline) and the full order: hidden text, NFKC, "Th" glyphs, footnote markers, letter spacing, headers and footers, dot leaders, hyphens, whitespace. Every change is a mark with the original text |
+| `structure.py` | Section paths (bookmarks, then headings by font size), printed page labels, contents pages and reference lists tagged |
 | `chunk.py` | The baseline fixed-size chunker, defect kept; each passage stores its character span |
 | `profiles.py` | Index profiles: parser + cleaner + chunker + embedding model, prefixes, dimensions, metric |
 | `embed.py` | The embedder for a profile; refuses a missing model or a different digest |
 | `store.py` | LanceDB: one table per build, atomic pointer switch, exact cosine search, build history |
-| `ingest.py` | parse → clean → chunk → embed → store, incremental by content hash, a manifest per build |
+| `ingest.py` | parse → clean (and guard) → chunk → embed → store, incremental by content hash, a manifest per build; cleaned documents cached by file, parser, cleaner and the cleaning code's hash |
 | `retrieve.py` | Opens a profile's active build; refuses a build made with another setup; dense search |
-| `prompt.py` | Versioned system prompts (v2, v2-handbuilt) with sha256; the context block; truncation check |
-| `answer.py` | The one answering path: events stage → ready → delta → done/error; citations built by code |
+| `prompt.py` | Versioned system prompts (v2, v2-handbuilt, v3 with passages fenced as data) with sha256; the context block; truncation check |
+| `answer.py` | The one answering path: events stage → ready → delta → done/error; the guard step; citations built by code |
 | `trace.py` | The in-app trace: each finished step with its duration |
-| `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time), the ladder |
-| `library.py` | The PDFs, their titles, and what the active index holds of each |
+| `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time), the ladder with variants, two-run comparison |
+| `library.py` | The PDFs, their titles, what the active index holds of each, and the page inspector's data |
 | `health.py` | System Health: every check returns a status from one vocabulary and never raises |
 | `cli.py` | Terminal views behind `./rag`: health, ingest, eval |
 
-Planned, each arriving with its milestone: `structure`, `guard`, `context`,
-`rewrite`, `agent`, `rerank`, `vision`, `judge`.
+Planned, each arriving with its milestone: `context`, `rewrite`, `agent`,
+`rerank`, `vision`, `judge`.
 
-## API surface (M1)
+## API surface (M2)
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/status` | What the sidebar polls: AI up, answer model, another app's model loaded, documents, the active index |
 | `GET /api/health` | The full System Health report |
 | `GET /api/models` | Installed answer models with measured notes |
+| `GET /api/prompts` | The system prompt versions, with their full text and sha256 |
 | `GET /api/documents` | The PDF library: titles, pages, passages, near-empty pages |
 | `GET /api/documents/{doc}/pages/{n}/image?dpi=` | The page as PNG, cached by the PDF's content hash |
-| `GET /api/documents/{doc}/pages/{n}/boxes?start=&end=` | A passage's lines on its page, in 0..1 coordinates |
+| `GET /api/documents/{doc}/pages/{n}/boxes?start=&end=&profile=&chunk=` | A passage's lines on its page, in 0..1 coordinates: an exact span (baseline), words aligned (PyMuPDF + cleaning) or Docling's item boxes |
+| `GET /api/documents/{doc}/pages/{n}/inspect` | The page inspector: raw and clean text with every rule's marks, headers and footers, hidden text, sections, kinds, for PyMuPDF and (once converted) Docling |
+| `GET /api/documents/{doc}/cleaning` | Per-document counts per rule and parser, and the pages where a rule acted |
 | `GET /api/indexes` | Each profile and its active build's manifest |
-| `POST /api/ask` | One question as server-sent events (`web/api/sse.py`) |
+| `POST /api/ask` | One question as server-sent events (`web/api/sse.py`); `profile` and `prompt` choose the index and prompt version |
 | `GET /api/golden` | The test-question sets |
 | `GET /api/eval/runs`, `GET /api/eval/runs/{id}` | Run history; one run with every question |
 | `POST /api/eval/runs`, `POST /api/eval/runs/{id}/cancel` | Start a run in the background (409 if one is running); cancel it after the current question |
-| `GET /api/eval/ladder` | The 11 ladder rows, filled from tagged runs |
+| `GET /api/eval/ladder` | The 11 ladder rows, each with its variants, filled from tagged runs |
+| `GET /api/eval/compare?a=&b=` | Two runs side by side: setup differences and the questions whose outcome or retrieval changed |
 
 Interactive schema: http://127.0.0.1:8775/api/_docs while the app is running.
 
@@ -91,9 +98,11 @@ The model is *reachability*, as in the trading app:
 3. **Credentials travel browser → API, never API → browser** (M4). The Colab
    token is stored at `~/.local/state/rag-studio/` with mode 0600, outside the
    repository.
-4. **PDF text is data, never instructions** (M2): hidden text is dropped,
-   instruction-like passages are flagged, and passages are wrapped as data in the
-   prompt.
+4. **PDF text is data, never instructions** (M2, `rag_studio/guard.py`,
+   `docs/steps/13-safety.md`): hidden text is dropped before any step reads the
+   page (found by drawing the page with and without its text), instruction-like
+   phrases in passages and questions are flagged and shown, and prompt v3 fences
+   passages off as quoted data. `tests/test_guard.py` builds a PDF with each trick.
 5. **Nothing leaves the machine** except calls to your own Colab runtime.
    Tracing (M6) is self-hosted on loopback. Logs hold sizes and counts, never
    document or answer content.
@@ -106,7 +115,7 @@ The model is *reachability*, as in the trading app:
 | `data/golden/` | yes | Test questions with verified answer pages |
 | `data/lancedb/` | no | One LanceDB table per index build |
 | `data/indexes/` | no | Each profile's active-build pointer (= its manifest), written atomically, and the build history |
-| `data/cache/` | no | Parsed pages, context lines, figure descriptions, keyed by content hash |
+| `data/cache/` | no | Rendered pages; `docling/` converted documents (about 15 min to rebuild for all three); `clean/` cleaned documents per parser (seconds). Keyed by content hash (and options, and the cleaning code's hash) |
 | `data/runs/` | no | Evaluation runs with their full configuration |
 | `data/chat/` | no | Conversations, one JSON file each |
 | `~/.local/state/rag-studio/` | no (outside repo) | Colab token and connection, mode 0600 |

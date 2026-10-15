@@ -1,6 +1,6 @@
 """Ingest: PDFs in, a searchable index out.
 
-parse → clean → chunk → embed → store, for one index profile. The steps are
+parse → clean (and guard) → chunk → embed → store, for one index profile. The steps are
 the engine's modules; this file only runs them in order and records what it
 did in the build's manifest, so every later number can name the exact index
 it came from (rule 2).
@@ -16,14 +16,16 @@ import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 import lancedb
 
-from rag_studio import chunk, paths, store
+from rag_studio import chunk, clean, guard, paths, store
 from rag_studio.embed import Embedder
+from rag_studio.files import read_json, write_json_atomic
 from rag_studio.llm import OllamaClient
-from rag_studio.parse import Document, parse_pdf
+from rag_studio.parse import Document, file_sha256, parse_pdf
 from rag_studio.profiles import IndexProfile
 
 Progress = Callable[[str, dict[str, Any]], None]
@@ -39,6 +41,60 @@ def pdf_files() -> list:
 
 def documents() -> list[Document]:
     return [parse_pdf(p) for p in pdf_files()]
+
+
+# --------------------------------------------------------------------------- cleaned documents
+
+_CODE = ("clean.py", "guard.py", "structure.py", "parse.py", "parse_docling.py")
+
+
+def _code_hash() -> str:
+    """The cleaning code itself, so a changed rule never serves a stale cache."""
+    h = hashlib.sha256()
+    for name in _CODE:
+        h.update((Path(__file__).parent / name).read_bytes())
+    return h.hexdigest()[:8]
+
+
+def clean_cache_path(path: Path, parser: str, sha: str | None = None) -> Path:
+    sha = sha or file_sha256(path)
+    return paths.CACHE / "clean" / f"{sha[:16]}-{parser}-{clean.FULL_CLEANER_ID}-{_code_hash()}.json"
+
+
+def cleaned_document(path: Path, parser: str, *, progress: Progress | None = None,
+                     cached_only: bool = False) -> clean.CleanDoc | None:
+    """A PDF through the full cleaning order with one parser, cached by the
+    file's content, the parser, the cleaner and the code. `cached_only` never
+    runs a parser (the API uses it for Docling, which takes minutes)."""
+    path = Path(path)
+    out = clean_cache_path(path, parser)
+    data = read_json(out)
+    if data is not None:
+        return clean.CleanDoc.from_dict(data)
+    if parser == "pymupdf":
+        doc = clean.clean_pdf(path)
+    elif parser == "docling":
+        from rag_studio import parse_docling
+        if cached_only and not parse_docling.is_converted(path):
+            return None
+        ref = cleaned_document(path, "pymupdf")
+        doc = parse_docling.clean_docling(path, ref, progress=progress)
+    else:
+        raise ValueError(f"Unknown parser {parser!r}.")
+    write_json_atomic(out, doc.as_dict())
+    return doc
+
+
+def _passage_rows_meta(page: clean.CleanPage, p: chunk.Passage) -> dict[str, Any]:
+    """What a cleaned page knows about one passage: its section, kind, type
+    and any instruction-like phrase in it."""
+    mid = (p.char_start + p.char_end) // 2
+    path = page.at(page.sections, mid, "path") or []
+    in_table = any(i["label"] in ("table", "document_index") and i["start"] is not None
+                   and i["start"] <= mid < i["end"] for i in page.items)
+    return {"section_path": " > ".join(path) or None, "kind": page.at(page.kinds, mid, "kind") or "body",
+            "type": "table" if in_table else "text", "page_label": page.label,
+            "flags": [f["kind"] for f in guard.instruction_flags(p.text)]}
 
 
 @dataclass
@@ -58,24 +114,48 @@ def build(profile: IndexProfile, *, force: bool = False, progress: Progress | No
     docs = documents()
     if not docs:
         raise RuntimeError(f"No PDFs found in {paths.PDFS}. Add PDFs, then run ./rag ingest again.")
+    meta: dict[str, dict[str, Any]] = {}
+    cleaned: dict[str, clean.CleanDoc] = {}
+    if profile.cleaner != clean.CLEANER_ID:
+        for d in docs:
+            say("clean", {"doc_id": d.doc_id, "parser": profile.parser})
+            cd = cleaned_document(d.path, profile.parser, progress=say)
+            assert cd is not None
+            cleaned[d.doc_id] = cd
     timings["parse_s"] = time.perf_counter() - t
     say("parse", {"documents": len(docs), "pages": sum(d.page_count for d in docs),
                   "seconds": timings["parse_s"]})
 
     t = time.perf_counter()
-    passages = [p for d in docs for p in chunk.chunk_pages(d.pages, profile.chunker)]
+    passages: list[chunk.Passage] = []
+    for d in docs:
+        pages: Any = cleaned[d.doc_id].pages if d.doc_id in cleaned else d.pages
+        cut = chunk.chunk_pages(pages, profile.chunker)
+        if d.doc_id in cleaned:
+            by_page = {pg.page: pg for pg in cleaned[d.doc_id].pages}
+            for p in cut:
+                meta[p.chunk_id] = _passage_rows_meta(by_page[p.page], p)
+        passages += cut
     timings["chunk_s"] = time.perf_counter() - t
     say("chunk", {"passages": len(passages), "seconds": timings["chunk_s"]})
 
     embedder = Embedder(profile.embedding, client=client)
     digest = embedder.check()
     config = profile.config()
-    doc_rows = [{
-        "doc_id": d.doc_id, "title": d.title, "file": d.path.name, "sha256": d.sha256,
-        "pages": d.page_count,
-        "near_empty_pages": [p.page for p in d.pages if p.is_near_empty],
-        "passages": sum(1 for p in passages if p.doc_id == d.doc_id),
-    } for d in docs]
+    doc_rows = []
+    for d in docs:
+        pages = cleaned[d.doc_id].pages if d.doc_id in cleaned else d.pages
+        row = {
+            "doc_id": d.doc_id, "title": d.title, "file": d.path.name, "sha256": d.sha256,
+            "pages": d.page_count,
+            "near_empty_pages": [p.page for p in pages if p.is_near_empty],
+            "passages": sum(1 for p in passages if p.doc_id == d.doc_id),
+        }
+        if d.doc_id in cleaned:
+            row["cleaning"] = cleaned[d.doc_id].counts
+            row["flagged_passages"] = sum(1 for p in passages if p.doc_id == d.doc_id
+                                          and meta[p.chunk_id]["flags"])
+        doc_rows.append(row)
 
     prior = store.active_manifest(profile.id)
     same_setup = bool(prior and prior["config"] == config and prior["embedding"]["digest"] == digest)
@@ -101,12 +181,14 @@ def build(profile: IndexProfile, *, force: bool = False, progress: Progress | No
     timings["embed_s"] = time.perf_counter() - t
     vectors = dict(zip(todo, fresh))
 
+    none = {"section_path": None, "kind": "body", "type": "text", "page_label": None, "flags": []}
     rows = [{
-        "chunk_id": p.chunk_id, "doc_id": p.doc_id, "page": p.page, "section_path": None,
-        "type": "text", "text": p.text, "context": None, "content_hash": h,
+        "chunk_id": p.chunk_id, "doc_id": p.doc_id, "page": p.page,
+        "text": p.text, "context": None, "content_hash": h,
         "vector": vectors[i] if i in vectors else reuse[h],
         "parser": profile.parser, "chunker": profile.chunker.id,
         "char_start": p.char_start, "char_end": p.char_end,
+        **meta.get(p.chunk_id, none),
     } for i, (p, h) in enumerate(zip(passages, hashes))]
 
     t = time.perf_counter()

@@ -436,35 +436,112 @@ def tag_ladder(run_id: str, row: int, label: str | None = None) -> dict[str, Any
 
 
 def ladder() -> list[dict[str, Any]]:
-    """Every ladder row, with the latest finished result per test set from the
-    runs tagged with it. `mixed` is true when those runs were not made with
-    one configuration, so the row's numbers must not be read together."""
+    """Every ladder row, each with its variants: runs tagged with the row,
+    grouped by setup (row 2 has "PyMuPDF + cleaning" and "Docling + cleaning").
+    A variant shows the latest finished result per test set; `mixed` is true
+    when its runs were not made with one configuration, so its numbers must
+    not be read together. A row with no tagged run has no variants: "-"."""
     runs = [r for r in (get_run(b["id"]) for b in list_runs()) if r and r.get("ladder")
             and r["status"] == "done"]
     out = []
     for step in LADDER:
         tagged = [r for r in runs if r["ladder"]["row"] == step["row"]]   # newest first
-        per_set: dict[str, dict[str, Any]] = {}
-        used: list[dict[str, Any]] = []
+        keys: list[tuple] = []
         for r in tagged:
-            for sid in r["spec"]["sets"]:
-                if sid in per_set:
-                    continue
-                rows = [x for x in r["results"] if x["set"] == sid]
-                per_set[sid] = {
-                    "run_id": r["id"],
-                    "recall": (r["summary"]["recall"] or {}).get(sid),
-                    "outcomes": ({o: sum(1 for x in rows if x["outcome"] == o) for o in OUTCOMES}
-                                 if any(x["outcome"] for x in rows) else None),
-                }
-                if r not in used:
-                    used.append(r)
-        out.append({**step, "sets": per_set,
-                    "runs": [{"id": r["id"], "label": r.get("label"), "started_at": r["started_at"]}
-                             for r in used],
-                    "config": _brief(used[0]["config"]) if used else None,
-                    "mixed": len({config_key(r["config"]) for r in used}) > 1})
+            if variant_key(r["config"]) not in keys:
+                keys.append(variant_key(r["config"]))
+        variants = []
+        for key in reversed(keys):                                         # oldest variant first
+            group = [r for r in tagged if variant_key(r["config"]) == key]
+            label = min((r["ladder"]["label"] for r in group), key=len)
+            variants.append(_variant(label, group))
+        out.append({**step, "variants": variants})
     return out
+
+
+def variant_key(cfg: dict[str, Any]) -> tuple:
+    """A ladder variant is one setup: index profile, embedding, k, answer
+    model and prompt. Rebuilding the same index (a new table) is not a new
+    variant, but `mixed` reports it."""
+    return (((cfg.get("index") or {}).get("profile")),) + config_key(cfg)[1:]
+
+
+def _variant(label: str, tagged: list[dict[str, Any]]) -> dict[str, Any]:
+    per_set: dict[str, dict[str, Any]] = {}
+    used: list[dict[str, Any]] = []
+    for r in tagged:
+        for sid in r["spec"]["sets"]:
+            if sid in per_set:
+                continue
+            rows = [x for x in r["results"] if x["set"] == sid]
+            per_set[sid] = {
+                "run_id": r["id"],
+                "recall": (r["summary"]["recall"] or {}).get(sid),
+                "outcomes": ({o: sum(1 for x in rows if x["outcome"] == o) for o in OUTCOMES}
+                             if any(x["outcome"] for x in rows) else None),
+            }
+            if r not in used:
+                used.append(r)
+    return {"label": label, "sets": per_set,
+            "runs": [{"id": r["id"], "label": r.get("label"), "started_at": r["started_at"]} for r in used],
+            "config": _brief(used[0]["config"]) if used else None,
+            "mixed": len({config_key(r["config"]) for r in used}) > 1}
+
+
+# --------------------------------------------------------------------------- comparing two runs
+
+def _flat(d: Any, prefix: str = "") -> dict[str, Any]:
+    if isinstance(d, dict):
+        out: dict[str, Any] = {}
+        for k, v in d.items():
+            out.update(_flat(v, f"{prefix}.{k}" if prefix else str(k)))
+        return out
+    return {prefix: d}
+
+
+# Keys that differ between any two runs and say nothing about the setup.
+_NOISE = ("index.built_at", "index.table", "app_version")
+
+
+def compare(a_id: str, b_id: str) -> dict[str, Any]:
+    """Two runs side by side (spec §8): what differs in their configuration,
+    and every question both asked, with the rows whose outcome or retrieval
+    changed marked. Run A is "before", run B is "after"."""
+    a, b = get_run(a_id), get_run(b_id)
+    if a is None or b is None:
+        raise ValueError("No such run. It may have been deleted.")
+    fa, fb = _flat(a["config"]), _flat(b["config"])
+    config = [{"key": k, "a": fa.get(k), "b": fb.get(k)} for k in sorted(set(fa) | set(fb))
+              if fa.get(k) != fb.get(k) and not k.startswith(_NOISE)]
+    by_a = {(x["set"], x["id"]): x for x in a["results"]}
+    rows = []
+    for x in b["results"]:
+        y = by_a.get((x["set"], x["id"]))
+        if y is None:
+            continue
+        hit_a, hit_b = y["hit_rank"] is not None, x["hit_rank"] is not None
+        rows.append({
+            "set": x["set"], "id": x["id"], "question": x["question"], "category": x.get("category"),
+            "a": _brief_row(y), "b": _brief_row(x),
+            "outcome_changed": y["outcome"] != x["outcome"],
+            "retrieval_changed": hit_a != hit_b,
+            "rank_moved": (y["best_rank"] or 0) != (x["best_rank"] or 0),
+        })
+    sets = sorted({r["set"] for r in rows})
+    return {"a": _run_head(a), "b": _run_head(b), "config": config, "rows": rows,
+            "summary": {"a": summarize([r for r in a["results"] if r["set"] in sets], sets),
+                        "b": summarize([r for r in b["results"] if r["set"] in sets], sets)},
+            "changed": sum(1 for r in rows if r["outcome_changed"] or r["retrieval_changed"])}
+
+
+def _brief_row(x: dict[str, Any]) -> dict[str, Any]:
+    return {k: x.get(k) for k in ("outcome", "hit_rank", "best_rank", "answer", "found", "missing",
+                                  "refused", "error")}
+
+
+def _run_head(r: dict[str, Any]) -> dict[str, Any]:
+    return {k: r.get(k) for k in ("id", "label", "ladder", "started_at", "status")} | {
+        "config": _brief(r.get("config") or {})}
 
 
 # --------------------------------------------------------------------------- history
@@ -517,6 +594,8 @@ def _brief(cfg: dict[str, Any]) -> dict[str, Any]:
     answer = cfg.get("answer") or {}
     return {"mode": cfg.get("mode"), "k": cfg.get("k"), "profile": index.get("profile"),
             "index_label": index.get("label"), "table": index.get("table"),
+            "parser": (index.get("config") or {}).get("parser"),
+            "cleaner": (index.get("config") or {}).get("cleaner"),
             "embedding_model": (index.get("embedding") or {}).get("model"),
             "retrieval": (cfg.get("retrieval") or {}).get("method"),
             "answer_model": answer.get("model"), "prompt_version": answer.get("prompt_version")}

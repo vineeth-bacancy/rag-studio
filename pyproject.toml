@@ -11,6 +11,13 @@ dependencies = [
     "httpx>=0.28.1",
     "pymupdf==1.28.2",
     "lancedb==0.40.0",
+    # M2: the layout-aware parser. Only `./rag ingest` loads its models; the
+    # API reads the converted documents from the cache.
+    "docling==2.139.0",
+    # Docling needs torch. These two come from PyTorch's CPU index (below):
+    # about 200 MB instead of about 3 GB of CUDA wheels this laptop cannot use.
+    "torch>=2.14",
+    "torchvision>=0.29",
 ]
 
 [dependency-groups]
@@ -19,6 +26,15 @@ dev = [
     # Starlette 1.8's TestClient prefers httpx2 and warns on httpx.
     "httpx2>=2.13.1",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true   # used only by the packages pinned to it in [tool.uv.sources]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

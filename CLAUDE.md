@@ -132,3 +132,28 @@ Warning / Needs attention / Unavailable.
 - Answer pages in a test set must list **every** page that states the answer,
   and a key can be wrong: D3's was widened when p44 turned out to call the
   adjusted figure plain "net income". Check the text before blaming the model.
+
+## Engine gotchas (learned in M2)
+
+- **Hidden text is decided by pixels, not rules.** "White text" and "a later
+  fill covers it" flagged visible text (iMac p6, GEP table headers). The guard
+  renders the page with and without its text (`guard.py`); keep it that way.
+- Text placed outside the page (GPO p15) is not in `get_text()` (mediabox
+  clip) and survives a page-rect redaction; the guard checks the page rect first.
+- PyMuPDF's `rawdict` marks invented spaces (`synthetic`); the layout reader's
+  lines rebuild `get_text()` exactly (append "\n" unless the line already ends
+  with one). Don't switch to `sort=True`: it interleaves columns.
+- A ligature glyph repair must check that the rest is really missing: GPO maps
+  `f_f_i` to "f" and carries "fi" after it ("Traffiicking" otherwise).
+- Line-end fragments ("sugges", "tions") must not count as dictionary words;
+  "debt-to-GDP" attests "debt-to".
+- Docling: 866 s and 6.4 GB for the 294 pages. Only `./rag ingest` converts;
+  everything else reads `data/cache/docling/`. Iterate with
+  `traverse_pictures=True` or chart text disappears. Its bboxes are bottom-left.
+- The cleaned-document cache key includes a hash of the cleaning code, so any
+  edit to `clean/guard/structure/parse/parse_docling.py` recomputes (seconds;
+  Docling's conversion itself stays cached). A built index keeps the text it was
+  built with: rebuild it (`./rag ingest --profile …`, vectors reused by hash)
+  before measuring a cleaning change.
+- `dcg` blocks `shutil.rmtree` and some heredocs with backslashes: use a fresh
+  scratch folder and the Edit tool instead.

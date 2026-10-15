@@ -89,3 +89,47 @@ def test_api_lists_sets_and_unknown_runs_404(client, fake):
     assert {s["id"] for s in sets} >= {"set-a", "set-b", "set-d"}
     assert client.get("/api/eval/runs/20990101-000000-abcd").status_code == 404
     assert client.get("/api/eval/runs/..%2Fsecrets").status_code == 404
+
+
+def test_compare_marks_the_rows_that_changed(fake):
+    before = ev.execute(ev.RunSpec(sets=["set-a"], mode="answer", model="qwen3:1.7b"), client=fake)
+    fake.answer_text = "I could not find this in the documents."
+    after = ev.execute(ev.RunSpec(sets=["set-a"], mode="answer", model="qwen3:1.7b",
+                                  prompt_version="v3"), client=fake)
+    cmp = ev.compare(before["id"], after["id"])
+    keys = {c["key"] for c in cmp["config"]}
+    assert "answer.prompt_version" in keys and "answer.prompt_sha256" in keys
+    assert not any(k.startswith("index.built_at") for k in keys)       # noise is left out
+    a1 = next(r for r in cmp["rows"] if r["id"] == "A1")
+    assert (a1["a"]["outcome"], a1["b"]["outcome"]) == ("PASS", "REFUSED") and a1["outcome_changed"]
+    t1 = next(r for r in cmp["rows"] if r["id"] == "T1")
+    assert (t1["a"]["outcome"], t1["b"]["outcome"]) == ("WRONG", "PASS")
+    assert cmp["changed"] == sum(1 for r in cmp["rows"] if r["outcome_changed"] or r["retrieval_changed"])
+
+
+def test_ladder_groups_tagged_runs_into_variants_by_setup(fake):
+    a = ev.execute(ev.RunSpec(sets=["set-b"], mode="retrieval",
+                              ladder={"row": 2, "label": "Variant one"}), client=fake)
+    b = ev.execute(ev.RunSpec(sets=["set-a"], mode="retrieval",
+                              ladder={"row": 2, "label": "Variant one: more sets"}), client=fake)
+    row2 = next(r for r in ev.ladder() if r["row"] == 2)
+    assert len(row2["variants"]) == 1                      # same setup: one variant, both sets
+    v = row2["variants"][0]
+    assert v["label"] == "Variant one" and set(v["sets"]) == {"set-a", "set-b"} and not v["mixed"]
+    assert {x["id"] for x in v["runs"]} == {a["id"], b["id"]}
+    assert all(r["variants"] == [] for r in ev.ladder() if r["row"] not in (2,))
+
+
+def test_api_compare(client, fake):
+    one = ev.execute(ev.RunSpec(sets=["set-b"], mode="retrieval"), client=fake)
+    two = ev.execute(ev.RunSpec(sets=["set-b"], mode="retrieval"), client=fake)
+    r = client.get(f"/api/eval/compare?a={one['id']}&b={two['id']}")
+    assert r.status_code == 200 and r.json()["changed"] == 0 and len(r.json()["rows"]) == 6
+    assert client.get("/api/eval/compare?a=nope&b=nope").status_code == 404
+
+
+def test_api_refuses_an_unknown_profile_or_prompt(client, fake):
+    r = client.post("/api/eval/runs", json={"sets": ["set-b"], "mode": "retrieval", "profile": "nope"})
+    assert r.status_code == 400 and "index profile" in r.json()["detail"]
+    r = client.post("/api/eval/runs", json={"sets": ["set-b"], "mode": "retrieval", "prompt": "v9"})
+    assert r.status_code == 400 and "prompt version" in r.json()["detail"]

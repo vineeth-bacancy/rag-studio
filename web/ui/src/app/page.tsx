@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { ArrowUp, Bot, CircleSlash, Loader2, MessageSquareText, RotateCcw, Square } from "lucide-react";
+import { AlertTriangle, ArrowUp, Bot, CircleSlash, Loader2, MessageSquareText, RotateCcw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,9 +12,10 @@ import { EmptyState, ErrorState } from "@/components/common/states";
 import { AnswerText } from "@/components/ask/answer-text";
 import { useAsk, type Exchange } from "@/components/ask/ask-store";
 import { PagePreview } from "@/components/ask/page-preview";
+import { SetupPicker } from "@/components/ask/setup-picker";
 import { Sources } from "@/components/ask/sources";
 import { WhatHappened, duration } from "@/components/ask/trace";
-import { ApiError, type AppStatus, type DocumentFile, type GoldenSet, type Source } from "@/lib/api";
+import { ApiError, type AppStatus, type DocumentFile, type GoldenSet, type IndexProfileRow, type Source } from "@/lib/api";
 import { num } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,9 @@ export default function AskPage() {
   const clear = useAsk((s) => s.clear);
 
   const [draft, setDraft] = useState("");
-  const [preview, setPreview] = useState<Source | null>(null);
+  // The page preview needs the index the source came from: a cleaned index
+  // locates its passage differently from the baseline.
+  const [preview, setPreview] = useState<{ source: Source; profile: string } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const docs = docData?.documents;
@@ -48,6 +51,10 @@ export default function AskPage() {
     inputRef.current?.focus();
   }
 
+  // The intro describes the index answers will come from: the chosen one.
+  const { data: indexes } = useSWR<{ profiles: IndexProfileRow[] }>("/indexes");
+  const profile = useAsk((s) => s.profile);
+  const chosen = indexes?.profiles.find((p) => p.id === profile);
   const examples = golden?.sets.find((s) => s.id === "set-a")?.questions.filter((q) => q.id.startsWith("A")).slice(0, 4) ?? [];
   const noIndex = status && !status.indexed;
 
@@ -83,8 +90,8 @@ export default function AskPage() {
             <Card>
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  {status?.index
-                    ? `Answers come only from your ${num(status.documents)} reports: ${num(status.index.rows)} passages, searched by meaning. Each fact is cited, and a citation opens the page it came from.`
+                  {status && chosen?.active
+                    ? `Answers come only from your ${num(status.documents)} reports: ${num(chosen.active.rows)} passages in the ${chosen.label} index, searched by meaning. Each fact is cited, and a citation opens the page it came from.`
                     : "Answers come only from your reports. Each fact is cited, and a citation opens the page it came from."}
                 </p>
                 {examples.length > 0 && (
@@ -111,7 +118,14 @@ export default function AskPage() {
 
           <div className="space-y-8">
             {exchanges.map((ex) => (
-              <ExchangeView key={ex.id} ex={ex} docs={docs} onOpen={setPreview} onRetry={() => void ask(ex.question)} busy={busy} />
+              <ExchangeView
+                key={ex.id}
+                ex={ex}
+                docs={docs}
+                onOpen={(source) => setPreview({ source, profile: ex.ready?.index.profile ?? "baseline" })}
+                onRetry={() => void ask(ex.question)}
+                busy={busy}
+              />
             ))}
           </div>
           <div ref={endRef} />
@@ -143,8 +157,10 @@ export default function AskPage() {
                 rows={2}
                 className="max-h-48 min-h-14 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
               />
-              <div className="flex items-center justify-between gap-2 px-1 pt-1">
-                <p className="text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1">
+                <SetupPicker disabled={busy} />
+                <div className="ml-auto flex items-center gap-2">
+                <p className="hidden text-[11px] text-muted-foreground sm:block">
                   {draft.length >= QUESTION_LIMIT * 0.9
                     ? `${num(draft.length)} of ${num(QUESTION_LIMIT)} characters`
                     : "Enter to ask · Shift+Enter for a new line"}
@@ -160,13 +176,20 @@ export default function AskPage() {
                     Ask
                   </Button>
                 )}
+                </div>
               </div>
             </div>
           </form>
         </>
       )}
 
-      <PagePreview source={preview} docs={docs} open={preview !== null} onOpenChange={(o) => !o && setPreview(null)} />
+      <PagePreview
+        source={preview?.source ?? null}
+        profile={preview?.profile ?? "baseline"}
+        docs={docs}
+        open={preview !== null}
+        onOpenChange={(o) => !o && setPreview(null)}
+      />
     </div>
   );
 }
@@ -176,7 +199,8 @@ function liveLabel(ex: Exchange): string {
   const last = ex.stages.at(-1)?.id;
   if (!last) return "Searching your documents...";
   if (last === "embed") return "Searching your documents...";
-  if (last === "search") return "Building the prompt...";
+  if (last === "search") return "Checking for instructions...";
+  if (last === "guard") return "Building the prompt...";
   if (last === "prompt") {
     return ex.text
       ? `${ex.ready?.model.name ?? "The model"} is writing...`
@@ -200,14 +224,23 @@ function ExchangeView({
 }) {
   const sources = ex.done?.sources ?? ex.ready?.sources ?? [];
   const refused = ex.done?.refused === true;
+  // The guard step lists instruction-like phrases it found in the question.
+  const guardStep = ex.stages.find((s) => s.id === "guard");
+  const asked = (guardStep?.detail.question_flags as unknown as { label: string }[] | undefined) ?? [];
   const cited = ex.done?.citations.valid ?? [];
 
   return (
     <article className="space-y-3" aria-busy={ex.status === "streaming"}>
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end gap-1">
         <p className="max-w-[85%] rounded-2xl rounded-br-md bg-secondary px-3.5 py-2 text-sm text-pretty text-secondary-foreground">
           {ex.question}
         </p>
+        {asked.length > 0 && (
+          <p className="flex max-w-[85%] items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            {asked[0].label}. The rules still apply: answers come only from your documents.
+          </p>
+        )}
       </div>
 
       <div className="flex items-start gap-3">
@@ -267,7 +300,13 @@ function ExchangeView({
           )}
 
           {sources.length > 0 && (
-            <Sources sources={sources} cited={ex.done ? cited : null} docs={docs} onOpen={onOpen} />
+            <Sources
+              sources={sources}
+              cited={ex.done ? cited : null}
+              docs={docs}
+              onOpen={onOpen}
+              promptVersion={ex.ready?.prompt.version}
+            />
           )}
           {ex.stages.length > 0 && <WhatHappened steps={ex.done?.trace ?? ex.stages} ready={ex.ready} done={ex.done} />}
         </div>

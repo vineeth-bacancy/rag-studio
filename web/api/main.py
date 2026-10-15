@@ -18,7 +18,8 @@ from guard import RequestGuard, allowed_origins
 from rag_studio import __version__, answer, eval as evaluation, health, library, paths, profiles, store
 from rag_studio.config import MODEL_NOTES, role_model
 from rag_studio.llm import OllamaClient, OllamaUnavailable
-from rag_studio.parse import file_sha256, passage_boxes, render_page_png
+from rag_studio.parse import aligned_boxes, file_sha256, passage_boxes, render_page_png
+from rag_studio.prompt import DEFAULT_VERSION, SYSTEM_PROMPTS
 
 app = FastAPI(
     title="RAG Studio API",
@@ -106,14 +107,58 @@ def get_page_image(doc_id: str, page: int, dpi: int = Query(110, ge=36, le=220))
 
 @app.get("/api/documents/{doc_id}/pages/{page}/boxes")
 def get_passage_boxes(doc_id: str, page: int, start: int = Query(..., ge=0),
-                      end: int = Query(..., ge=1)) -> dict:
-    """Where a passage (a span of the page's clean text) sits on the page."""
+                      end: int = Query(..., ge=1), profile: str = Query(profiles.DEFAULT, max_length=40),
+                      chunk: str | None = Query(None, max_length=200)) -> dict:
+    """Where a passage sits on the page. The baseline index stores exact
+    character spans of PyMuPDF's text; a cleaned index's text differs, so its
+    passage is found by aligning words (PyMuPDF) or by Docling's item boxes."""
     if end <= start:
         _fail(400, "The passage end must come after its start.")
+    path = _doc_path(doc_id)
+    prof = _profile(profile)
     try:
-        return passage_boxes(_doc_path(doc_id), page, start, end)
+        if prof.cleaner == profiles.BASELINE.cleaner and prof.parser == profiles.BASELINE.parser:
+            return passage_boxes(path, page, start, end)
+        manifest = store.active_manifest(prof.id)
+        passage = (store.get_passage(store.open_table(manifest["table"]), chunk)
+                   if manifest and chunk else None)
+        if passage is None or passage["doc_id"] != doc_id or passage["page"] != page:
+            _fail(404, "That passage is not in the index any more. Ask the question again.")
+        if prof.parser == "docling":
+            return _docling_boxes(doc_id, page, start, end)
+        return aligned_boxes(path, page, passage["text"])
     except IndexError as e:
         _fail(404, str(e))
+
+
+def _docling_boxes(doc_id: str, page: int, start: int, end: int) -> dict:
+    doc = library.clean_doc(doc_id, "docling")
+    if doc is None:
+        _fail(404, "Docling has not converted this document yet. Run: ./rag ingest --profile docling-clean")
+    pg = doc.pages[page - 1]
+    boxes = [{"x0": i["box"][0] / pg.width, "y0": i["box"][1] / pg.height,
+              "x1": i["box"][2] / pg.width, "y1": i["box"][3] / pg.height}
+             for i in pg.items if i["start"] is not None and i["start"] < end and i["end"] > start]
+    return {"width": pg.width, "height": pg.height, "boxes": boxes, "aligned": 1.0 if boxes else 0.0}
+
+
+@app.get("/api/documents/{doc_id}/pages/{page}/inspect")
+def get_page_inspection(doc_id: str, page: int) -> dict:
+    """One page through both parsers and every cleaning rule, for the page
+    inspector. The first PyMuPDF view of a document takes a few seconds (the
+    guard renders each page twice); later views come from the cache."""
+    _doc_path(doc_id)
+    try:
+        return library.inspect_page(doc_id, page)
+    except IndexError as e:
+        _fail(404, str(e))
+
+
+@app.get("/api/documents/{doc_id}/cleaning")
+def get_cleaning(doc_id: str) -> dict:
+    """What cleaning and the guard did to one document, per parser."""
+    _doc_path(doc_id)
+    return library.cleaning_summary(doc_id)
 
 
 @app.get("/api/indexes")
@@ -131,13 +176,38 @@ def get_indexes() -> dict:
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(answer.DEFAULT_K, ge=1, le=20)
+    profile: str = Field(profiles.DEFAULT, max_length=40)
+    prompt: str = Field(DEFAULT_VERSION, max_length=40)
+
+
+def _profile(profile_id: str) -> profiles.IndexProfile:
+    try:
+        return profiles.get(profile_id)
+    except KeyError as e:
+        _fail(400, str(e.args[0]))
+
+
+def _prompt(version: str) -> str:
+    if version not in SYSTEM_PROMPTS:
+        _fail(400, f"No prompt version {version!r}. Known: {', '.join(SYSTEM_PROMPTS)}.")
+    return version
 
 
 @app.post("/api/ask")
 def post_ask(req: AskRequest):
     """One question, answered as server-sent events (see rag_studio/answer.py
     for the event contract): stage, ready, delta, done or error."""
-    return sse.stream(answer.ask(req.question, k=req.k))
+    return sse.stream(answer.ask(req.question, k=req.k, profile_id=_profile(req.profile).id,
+                                 prompt_version=_prompt(req.prompt)))
+
+
+@app.get("/api/prompts")
+def get_prompts() -> dict:
+    """The system prompt versions, with their full text: the prompt is part of
+    what a run measures, so it is never hidden."""
+    from rag_studio.prompt import prompt_sha256
+    return {"default": DEFAULT_VERSION, "versions": [
+        {"version": v, "sha256": prompt_sha256(v), "text": t} for v, t in SYSTEM_PROMPTS.items()]}
 
 
 # --------------------------------------------------------------------------- evaluation
@@ -166,6 +236,18 @@ def get_ladder() -> dict:
     return {"rows": evaluation.ladder()}
 
 
+@app.get("/api/eval/compare")
+def get_compare(a: str = Query(..., max_length=40), b: str = Query(..., max_length=40)) -> dict:
+    """Two runs side by side: what differs in their setup, and which
+    questions changed outcome or retrieval. A is "before", B is "after"."""
+    if not (_RUN_ID.match(a) and _RUN_ID.match(b)):
+        _fail(404, "No such run. It may have been deleted.")
+    try:
+        return evaluation.compare(a, b)
+    except ValueError as e:
+        _fail(404, str(e))
+
+
 @app.get("/api/eval/runs/{run_id}")
 def get_run(run_id: str) -> dict:
     run = evaluation.get_run(run_id) if _RUN_ID.match(run_id) else None
@@ -180,6 +262,8 @@ class RunRequest(BaseModel):
     model: str | None = Field(None, max_length=100)
     k: int = Field(answer.DEFAULT_K, ge=1, le=20)
     label: str | None = Field(None, max_length=80)
+    profile: str = Field(profiles.DEFAULT, max_length=40)
+    prompt: str = Field(DEFAULT_VERSION, max_length=40)
 
 
 # Cancel flags for runs started by this process. A run started from the
@@ -193,7 +277,8 @@ def post_run(req: RunRequest) -> dict:
     """Start a run in the background and return its id at once. The run saves
     itself after every question; poll GET /api/eval/runs/{id} for progress."""
     spec = evaluation.RunSpec(sets=req.sets, mode=req.mode, k=req.k, model=req.model,
-                              label=req.label)
+                              label=req.label, profile=_profile(req.profile).id,
+                              prompt_version=_prompt(req.prompt))
     with _start_lock:
         if evaluation.run_is_active():
             _fail(409, "An evaluation run is already in progress. Wait for it to finish, or cancel it.")

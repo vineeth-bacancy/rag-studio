@@ -5,7 +5,7 @@ import { FileText } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TechnicalDetails } from "@/components/common/technical-details";
-import type { DocumentFile, PassageBoxes, Source } from "@/lib/api";
+import { boxesPath, type DocumentFile, type PassageBoxes, type Source } from "@/lib/api";
 import { docTitle, pageImageUrl } from "@/lib/documents";
 
 /**
@@ -13,16 +13,21 @@ import { docTitle, pageImageUrl } from "@/lib/documents";
  * shown outlined on it. This is the check a reader can make with their own
  * eyes: does the page really say what the answer claims?
  *
- * The outline comes from the passage's character span on its page, mapped to
- * PyMuPDF's word boxes by the engine. Nothing here is guessed from the text.
+ * The outline comes from the engine: for the baseline index, the passage's
+ * character span mapped to PyMuPDF's word boxes; for a cleaned index, the
+ * passage's words aligned with the page's (cleaning changed the text), or
+ * Docling's layout boxes. Nothing here is guessed from the text.
  */
 export function PagePreview({
   source,
+  profile,
   docs,
   open,
   onOpenChange,
 }: {
   source: Source | null;
+  /** The index the source came from. */
+  profile: string;
   docs: DocumentFile[] | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,17 +35,19 @@ export function PagePreview({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-3 overflow-y-auto sm:max-w-3xl">
-        {source && <PreviewBody key={source.chunk_id} source={source} docs={docs} />}
+        {source && <PreviewBody key={source.chunk_id} source={source} profile={profile} docs={docs} />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function PreviewBody({ source, docs }: { source: Source; docs: DocumentFile[] | undefined }) {
+function PreviewBody({ source, profile, docs }: { source: Source; profile: string; docs: DocumentFile[] | undefined }) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
-  const boxesKey = `/documents/${encodeURIComponent(source.doc_id)}/pages/${source.page}/boxes?start=${source.char_start}&end=${source.char_end}`;
-  const { data: boxes } = useSWR<PassageBoxes>(boxesKey);
+  const { data: boxes } = useSWR<PassageBoxes>(boxesPath(source, profile));
+  // Baseline: true/false. Cleaned indexes: the share of the passage's words
+  // found in place on the page; under half means the outline can't be trusted.
+  const unaligned = boxes ? (typeof boxes.aligned === "number" ? boxes.aligned < 0.5 : !boxes.aligned) : false;
   const ratio = boxes ? boxes.height / boxes.width : 11 / 8.5;
 
   return (
@@ -53,7 +60,7 @@ function PreviewBody({ source, docs }: { source: Source; docs: DocumentFile[] | 
           <span className="truncate">{docTitle(source.doc_id, docs)}</span>
         </DialogTitle>
         <DialogDescription>
-          Page {source.page} of the PDF. The outlined lines are the passage the model was given as [{source.n}].
+          Page {source.page} of the PDF{source.page_label && source.page_label !== String(source.page) ? ` (printed ${source.page_label})` : ""}. The outlined lines are the passage the model was given as [{source.n}].
         </DialogDescription>
       </DialogHeader>
 
@@ -101,7 +108,7 @@ function PreviewBody({ source, docs }: { source: Source; docs: DocumentFile[] | 
               {source.text}
             </p>
           </div>
-          {boxes && !boxes.aligned && (
+          {unaligned && (
             <p className="text-xs text-muted-foreground">
               The outline isn&apos;t available for this page: its words couldn&apos;t be matched to the text.
             </p>
@@ -113,6 +120,11 @@ function PreviewBody({ source, docs }: { source: Source; docs: DocumentFile[] | 
               Score: source.score.toFixed(3),
               Type: source.type,
               Characters: `${source.char_start}-${source.char_end}`,
+              Index: profile,
+              Outline:
+                boxes && typeof boxes.aligned === "number"
+                  ? `${Math.round(boxes.aligned * 100)}% of the passage's words matched on the page`
+                  : "exact character span",
             }}
           />
         </div>

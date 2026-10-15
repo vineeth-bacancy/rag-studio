@@ -28,7 +28,8 @@ becomes a default only after it moves our own scorecard (§8 of the spec).
 |---|---|---|---|
 | Web stack | Next 16.3.0, React 19.2.8, Tailwind 4.3.3, shadcn base-nova on Base UI 1.9, FastAPI 0.143.1 | Same stack as the trading app; versions checked live | M0 ✓ |
 | Streaming | Our own SSE response (`web/api/sse.py`): `no-cache, no-transform`, `X-Accel-Buffering: no`, a ping every 15 s | FastAPI's `EventSourceResponse` hardcodes `Cache-Control: no-cache` (checked in M1); Next gzips a stream without `no-transform` | M1 ✓ |
-| Parsing | PyMuPDF baseline + **Docling 2.139** as a second parser profile, CPU torch | Layout, tables, headers moved out of the body; not a fix for "Th" or hidden text | M2 |
+| Parsing | PyMuPDF baseline + **Docling 2.139** as a second parser profile, CPU torch | Layout, tables, headers moved out of the body. Measured in M2 (§7.1): it does fix "Th", not hidden text, and it merges compounds and splits letter-spaced words | M2 ✓ |
+| Injection guard | Hidden text found by **rendering the page with and without its text**; instruction-like phrases flagged; prompt v3 fences passages as data | Paint-order rules alone flagged visible text on iMac p6 and GEP tables (measured) | M2 ✓ |
 | Vector store | **LanceDB 0.40**, exact (flat) search, our own RRF fusion | 7-10 ms exact at 1k rows; built-in hybrid hides the two input lists | M1/M3 |
 | Embeddings | nomic (baseline) → **qwen3-embedding:0.6b** (Ollama) → **qwen3-embedding:8b** built on Colab (the spec's ladder row 5) → **EmbeddingGemma 2** (sentence-transformers, not Ollama). qwen3-embedding:4b is an optional extra row | EmbeddingGemma 2's Ollama build cannot run on Linux | M4 |
 | Reranker | **Qwen3-Reranker-0.6B** via sentence-transformers `CrossEncoder` on CPU, **top 20 → top 5** as the spec says, latency measured; top 10 is the measured fallback if 20 is too slow. **4B** fp16 on Colab, then **8B** in 8-bit (fp16 does not fit a T4) | Ollama has no rerank API | M5 |
@@ -215,6 +216,35 @@ our own cleaning and guard steps stay, whichever parser wins.
 **Recommendation:** Docling as a second parser profile beside PyMuPDF, not a
 replacement: `do_ocr=False`, ACCURATE tables, page images for the inspector
 overlays, heading hierarchy on, the DoclingDocument JSON cached per PDF.
+
+### 7.1 Measured in M2 (2026-10-15, VERIFIED-LIVE)
+
+| Fact | Measured |
+|---|---|
+| Install | `docling==2.139.0` with torch 2.14.1+cpu from an explicit `pytorch-cpu` uv index; `.venv` grew 527 MB → 1.9 GB |
+| First-run model download | about 570 MB into `~/.cache/huggingface` (layout heron, TableFormer) |
+| Speed, CPU, 8 threads, no OCR, accurate tables, heading hierarchy | iMac 12 pages 21 s · GPO 82 pages 167 s · GEP 200 pages 678 s · **294 pages 866 s (0.34 pages/s)**. Slower than the 2024 report's 0.6-1.3 pages/s CLAIM |
+| Peak memory | **6.4 GB** (GEP) |
+| Hypothesis #7 "Th" not fixed | **Wrong: fixed.** docling-parse reads the glyph name `T_h` itself (`The outlook…` on GEP p29) |
+| Hypothesis #13 hidden text not fixed | Right: GPO p29's covered footer is body text. Off-page text (GPO p15) is clipped by Docling itself |
+| Hypothesis #3 compounds merged | Right: "conflictrelated", "smallAI", "shortterm"; 162 restored in GEP from the PyMuPDF path's decisions |
+| Hypothesis #11 unknown | **Worse than PyMuPDF**: letter-spaced and kerned text split into fragments ("Apr i l 14", "Nor th Capi tol St reet") |
+| Hypothesis #9 not fixed | Right, but spaced instead of glued: "recycled content 1" |
+| Charts | text inside a chart sits under its picture item; `iterate_items(traverse_pictures=True)` is needed to keep it (GPO p43 was otherwise near-empty) |
+
+**The PyMuPDF path, measured the same day:**
+- The PDF's own glyph names fix "Th": GEP's AGaramondPro subset maps code
+  `<01>` to `/T_h` in its `/Differences`, its ToUnicode has no `<01>`, and
+  `mupdf.fz_get_glyph_name2(font, gid)` returns `T_h` for the glyph PyMuPDF
+  reported as "T" (gid 95; the real T is gid 46). 325 repairs, no word list.
+- PyMuPDF marks the spaces it invents between letters (`synthetic: True` in
+  `rawdict`), which makes letter spacing (#11) fixable exactly.
+- `get_texttrace()` sequence numbers, `get_drawings()` sequence numbers and the
+  index of `get_bboxlog()` are one paint order (checked), but paint-order rules
+  alone flag visible text (iMac p6 has a transparent overlay; white labels sit
+  on coloured headers). The working test is the pixels: render, remove the text
+  with a text-only redaction (`fill=False`), render again, compare per span.
+  32 s for 294 pages. Details in `docs/steps/13-safety.md`.
 
 ## 8. LanceDB
 

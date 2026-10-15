@@ -41,12 +41,15 @@ export const api = {
   status: () => request<AppStatus>("/status"),
   health: () => request<HealthReport>("/health"),
   documents: () => request<{ documents: DocumentFile[] }>("/documents"),
-  boxes: (docId: string, page: number, start: number, end: number) =>
-    request<PassageBoxes>(
-      `/documents/${encodeURIComponent(docId)}/pages/${page}/boxes?start=${start}&end=${end}`,
-    ),
-  startRun: (body: { sets: string[]; mode: RunMode; model?: string | null; k?: number; label?: string | null }) =>
-    request<{ id: string }>("/eval/runs", { method: "POST", body: JSON.stringify(body) }),
+  startRun: (body: {
+    sets: string[];
+    mode: RunMode;
+    model?: string | null;
+    k?: number;
+    label?: string | null;
+    profile?: string;
+    prompt?: string;
+  }) => request<{ id: string }>("/eval/runs", { method: "POST", body: JSON.stringify(body) }),
   cancelRun: (id: string) =>
     request<{ id: string; cancelling: boolean }>(`/eval/runs/${id}/cancel`, { method: "POST" }),
 
@@ -57,7 +60,7 @@ export const api = {
    * server generating for nobody (it closes the Ollama connection).
    */
   askStream: async (
-    body: { question: string; k?: number },
+    body: { question: string; k?: number; profile?: string; prompt?: string },
     onEvent: (event: AskEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> => {
@@ -210,10 +213,19 @@ export interface HealthReport {
 // ---------------------------------------------------------------------------
 
 export interface TraceStep {
-  id: "embed" | "search" | "prompt" | "generate" | string;
+  id: "embed" | "search" | "guard" | "prompt" | "generate" | string;
   label: string;
   ms: number;
   detail: Record<string, string | number | boolean | null>;
+}
+
+/** An instruction-like phrase the guard found (rag_studio/guard.py). */
+export interface GuardFlag {
+  kind: string;
+  label: string;
+  match: string;
+  start: number;
+  end: number;
 }
 
 export interface Source {
@@ -223,13 +235,19 @@ export interface Source {
   chunk_id: string;
   doc_id: string;
   page: number;
+  /** The number printed on the page, when the page prints one (M2 indexes). */
+  page_label: string | null;
   section_path: string | null;
   type: "text" | "table" | "figure";
+  /** body, a contents page (toc) or a reference list (references). */
+  kind: "body" | "toc" | "references";
   /** Cosine similarity. Rank matters more than this number. */
   score: number;
   text: string;
   char_start: number;
   char_end: number;
+  /** Instruction-like phrases in the passage. Shown, never hidden. */
+  flags: GuardFlag[];
 }
 
 export interface IndexInfo {
@@ -313,7 +331,118 @@ export interface PassageBoxes {
   height: number;
   /** In 0..1 page coordinates, one per line of the passage. */
   boxes: { x0: number; y0: number; x1: number; y1: number }[];
-  aligned: boolean;
+  /** Baseline: whether the words lined up. Cleaned indexes: the share of the passage's words found in place (0..1). */
+  aligned: boolean | number;
+}
+
+/** The query string for a passage's outline on its page. */
+export function boxesPath(source: Source, profile: string): string {
+  const q = new URLSearchParams({
+    start: String(source.char_start),
+    end: String(source.char_end),
+    profile,
+    chunk: source.chunk_id,
+  });
+  return `/documents/${encodeURIComponent(source.doc_id)}/pages/${source.page}/boxes?${q}`;
+}
+
+// ---------------------------------------------------------------------------
+// Index profiles and prompts. Mirrors rag_studio/profiles.py and prompt.py.
+// ---------------------------------------------------------------------------
+
+export interface IndexProfileRow {
+  id: string;
+  label: string;
+  description: string;
+  /** The active build's manifest; null until the profile is built. */
+  active: { table: string; built_at: string; rows: number; config: Record<string, unknown>; documents: unknown[] } | null;
+  builds: number;
+}
+
+export interface PromptVersion {
+  version: string;
+  sha256: string;
+  text: string;
+}
+
+// ---------------------------------------------------------------------------
+// The page inspector (M2). Mirrors rag_studio/library.py inspect_page().
+// ---------------------------------------------------------------------------
+
+/** A cleaning rule's change in the clean text: where, which rule, and the extractor's original. */
+export interface TextMark {
+  start: number;
+  end: number;
+  rule: string;
+  before: string;
+}
+
+/** Where a rule acted in the raw text (furniture, hidden text, a split word...). */
+export interface RawMark {
+  start: number;
+  end: number;
+  rule: string;
+}
+
+export type PageBox = [number, number, number, number];
+
+export interface HiddenSpan {
+  reason: "covered" | "invisible" | "same_colour" | "clipped" | "off_page" | "tiny";
+  label: string;
+  text: string;
+  box: PageBox;
+}
+
+export interface ParserView {
+  text_raw: string;
+  raw_marks: RawMark[];
+  text: string;
+  marks: TextMark[];
+  label: string | null;
+  furniture: { text: string; box: PageBox }[];
+  hidden: HiddenSpan[];
+  headings: { start: number; text: string; size: number }[];
+  sections: { start: number; path: string[] }[];
+  kinds: { start: number; kind: "body" | "toc" | "references" }[];
+  /** Docling only: each layout item with its box and where its text sits in `text`. */
+  items: { label: string; box: PageBox; start: number | null; end: number | null; hidden?: boolean }[];
+  near_empty: boolean;
+  flags: GuardFlag[];
+  /** How many times each rule acted on this page. */
+  counts: Record<string, number>;
+}
+
+export interface CleaningRule {
+  id: string;
+  defect: number | null;
+  label: string;
+  explain: string;
+}
+
+export interface PageInspection {
+  doc_id: string;
+  page: number;
+  page_count: number;
+  width: number;
+  height: number;
+  label: string | null;
+  rules: CleaningRule[];
+  pymupdf: ParserView;
+  /** null until Docling has converted the document (./rag ingest --profile docling-clean). */
+  docling: ParserView | null;
+}
+
+export interface CleaningSummary {
+  doc_id: string;
+  pymupdf: ParserSummary | null;
+  docling: ParserSummary | null;
+}
+
+export interface ParserSummary {
+  counts: Record<string, number>;
+  info: Record<string, unknown>;
+  /** Pages where some rule acted, with per-rule counts. */
+  pages: { page: number; label: string | null; counts: Record<string, number> }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +529,7 @@ export interface RunBrief {
   finished_at: string | null;
   label: string | null;
   ladder: { row: number; label: string } | null;
-  spec: { sets: string[]; mode: RunMode; k: number; model: string | null; prompt_version: string };
+  spec: { sets: string[]; mode: RunMode; k: number; model: string | null; prompt_version: string; profile: string };
   sets: Record<string, { name: string; scored: boolean }>;
   progress: { done: number; total: number };
   summary: RunSummary | null;
@@ -412,6 +541,9 @@ export interface RunBrief {
     profile: string;
     index_label: string;
     table: string;
+    /** pymupdf or docling; null on runs saved before M2. */
+    parser?: string | null;
+    cleaner?: string | null;
     embedding_model: string;
     retrieval: string;
     answer_model: string | null;
@@ -450,4 +582,42 @@ export interface AnswerModel {
   parameter_size: string | null;
   quantization: string | null;
   note: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Comparing two runs (spec §8). Mirrors rag_studio/eval.py compare().
+// ---------------------------------------------------------------------------
+
+export interface CompareSide {
+  outcome: Outcome | null;
+  hit_rank: number | null;
+  best_rank: number | null;
+  answer: string | null;
+  found: string[];
+  missing: string[];
+  refused: boolean | null;
+  error: string | null;
+}
+
+export interface CompareRow {
+  set: string;
+  id: string;
+  question: string;
+  category: string | null;
+  a: CompareSide;
+  b: CompareSide;
+  outcome_changed: boolean;
+  retrieval_changed: boolean;
+  rank_moved: boolean;
+}
+
+export interface RunComparison {
+  a: Pick<RunBrief, "id" | "label" | "ladder" | "started_at" | "status" | "config">;
+  b: Pick<RunBrief, "id" | "label" | "ladder" | "started_at" | "status" | "config">;
+  /** Setup keys whose values differ (flattened, e.g. "index.config.parser"). */
+  config: { key: string; a: unknown; b: unknown }[];
+  rows: CompareRow[];
+  summary: { a: RunSummary; b: RunSummary };
+  /** Questions whose outcome or retrieval changed. */
+  changed: number;
 }

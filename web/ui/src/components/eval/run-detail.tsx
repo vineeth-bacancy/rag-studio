@@ -50,6 +50,7 @@ export function RunDetail({
         <CardDescription>
           {dateTimeLabel(run.started_at)} · {run.spec.mode === "answer" ? `answers by ${cfg.answer?.model}` : "retrieval only"} · top{" "}
           {cfg.k} passages · {cfg.index.label} index
+          {cfg.answer ? ` · prompt ${cfg.answer.prompt_version}` : ""}
           {run.seconds !== null ? ` · ${duration(run.seconds * 1000)}` : ""}
           {s?.scored ? ` · ${s.scored} answers scored` : ""}
         </CardDescription>
@@ -127,6 +128,8 @@ export function RunDetail({
             Run: run.id,
             Index: `${cfg.index.label} · ${cfg.index.table}`,
             Built: cfg.index.built_at,
+            Parser: [cfg.index.config.parser, cfg.index.config.parser_version].filter(Boolean).join(" ") || NO_DATA,
+            Cleaner: typeof cfg.index.config.cleaner === "string" ? cfg.index.config.cleaner : NO_DATA,
             Embedding: `${cfg.index.embedding.model} · ${cfg.index.embedding.dimensions} dims · ${cfg.index.embedding.quantization ?? NO_DATA}`,
             "Embedding digest": cfg.index.embedding.digest.slice(0, 19),
             Search: `${cfg.retrieval.method}, ${cfg.retrieval.metric}, ${cfg.retrieval.exact ? "exact" : "approximate"}, top ${cfg.k}`,

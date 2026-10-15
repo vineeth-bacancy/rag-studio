@@ -42,3 +42,23 @@ question (`data/runs/`), one run at a time across the CLI and the browser (a
 file lock). `./rag eval --set a b --ladder 1` or the Evaluation page.
 
 The results are in [`docs/ladder.md`](../ladder.md).
+
+`--profile` chooses the index (`baseline`, `pymupdf-clean`, `docling-clean`)
+and `--prompt` the prompt version; both are recorded.
+
+## The ladder has variants (M2)
+
+A ladder row is one change from the row above, but a row can hold more than one
+way of making that change: row 2 has **PyMuPDF + cleaning** and **Docling +
+cleaning**, each one change from the baseline. Runs tagged with a row are
+grouped by setup (index profile, embedding, k, answer model, prompt), so the
+Set A, B and D runs of one setup form one variant, whatever their labels.
+
+## Comparing two runs (M2)
+
+`GET /api/eval/compare?a=&b=` and the Evaluation page's comparison: run A is
+"before", run B "after". It lists the setup keys that differ (the parser, the
+prompt version, the index), the recall and Pass · Refused · Wrong of each, and
+every question both asked, marking the ones whose outcome or Hit/Miss changed.
+"Changed only" hides the rest. That is how an upgrade's effect is read: not as
+a total, but question by question.

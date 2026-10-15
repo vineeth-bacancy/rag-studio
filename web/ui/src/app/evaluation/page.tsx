@@ -3,10 +3,11 @@
 import { Suspense, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { ClipboardCheck } from "lucide-react";
+import { ClipboardCheck, GitCompareArrows } from "lucide-react";
 
 import { PageHeader } from "@/components/common/page-header";
 import { CardSkeleton, EmptyState, ErrorState } from "@/components/common/states";
+import { RunCompare } from "@/components/eval/compare";
 import { Ladder, type LadderRow } from "@/components/eval/ladder";
 import { RunDetail } from "@/components/eval/run-detail";
 import { RunHistory } from "@/components/eval/run-history";
@@ -32,6 +33,9 @@ function Evaluation() {
   const router = useRouter();
   const pathname = usePathname();
   const selected = params.get("run");
+  // The compared pair also lives in the URL (?a=&b=), so a comparison can be linked.
+  const compareA = params.get("a");
+  const compareB = params.get("b");
 
   const { data: status } = useSWR<AppStatus>("/status", { refreshInterval: 30_000 });
   const { data: golden, error: goldenError } = useSWR<{ sets: GoldenSet[] }>("/golden");
@@ -59,6 +63,17 @@ function Evaluation() {
     else q.delete("run");
     router.push(q.size ? `${pathname}?${q}` : pathname, { scroll: false });
   };
+
+  const compare = (a: string | null, b: string | null, reveal = false) => {
+    const q = new URLSearchParams(params.toString());
+    for (const [key, value] of [["a", a], ["b", b]] as const) {
+      if (value) q.set(key, value);
+      else q.delete(key);
+    }
+    router.replace(q.size ? `${pathname}?${q}` : pathname, { scroll: false });
+    if (reveal) document.getElementById("run-compare")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const finishedRuns = runsData?.runs.filter((r) => r.status === "done").length ?? 0;
 
   if (goldenError || runsError) {
     return <ErrorState message={(goldenError ?? runsError).message} error={goldenError ?? runsError} onRetry={() => void refreshRuns()} />;
@@ -101,8 +116,18 @@ function Evaluation() {
 
       {ladder && <Ladder rows={ladder.rows} />}
 
+      {finishedRuns >= 2 ? (
+        <RunCompare runs={runsData.runs} sets={golden.sets} a={compareA} b={compareB} onPick={(a, b) => compare(a, b)} />
+      ) : runsData.runs.length > 0 ? (
+        <EmptyState
+          icon={GitCompareArrows}
+          title="Nothing to compare yet"
+          description="Comparing needs two finished runs: one before a change and one after it."
+        />
+      ) : null}
+
       {runsData.runs.length > 0 ? (
-        <RunHistory runs={runsData.runs} selected={selected} />
+        <RunHistory runs={runsData.runs} selected={selected} onCompare={(a, b) => compare(a, b, true)} />
       ) : (
         <EmptyState
           icon={ClipboardCheck}

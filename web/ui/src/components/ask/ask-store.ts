@@ -27,6 +27,12 @@ export interface Exchange {
 interface AskState {
   exchanges: Exchange[];
   busy: boolean;
+  /** Which index to search and which prompt version to answer with. Each
+   * answer records what it actually used (ready.index, ready.prompt). */
+  profile: string;
+  prompt: string;
+  setProfile: (profile: string) => void;
+  setPrompt: (prompt: string) => void;
   send: (question: string) => Promise<void>;
   stop: () => void;
   clear: () => void;
@@ -43,6 +49,10 @@ export const useAsk = create<AskState>((set, get) => {
   return {
     exchanges: [],
     busy: false,
+    profile: "baseline",
+    prompt: "v2",
+    setProfile: (profile) => set({ profile }),
+    setPrompt: (prompt) => set({ prompt }),
 
     async send(question) {
       const text = question.trim();
@@ -57,7 +67,7 @@ export const useAsk = create<AskState>((set, get) => {
       });
       try {
         await api.askStream(
-          { question: text },
+          { question: text, profile: get().profile, prompt: get().prompt },
           (event) => {
             switch (event.event) {
               case "stage":

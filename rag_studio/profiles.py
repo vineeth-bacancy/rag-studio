@@ -7,11 +7,12 @@ text put in front of passages and questions. Two vectors are comparable only if
 all of these match, so the profile's manifest records every one of them, and a
 query embedded any other way is refused (rule 3 in CLAUDE.md).
 
-M1 has one profile, the baseline. M3-M4 add the upgrades beside it.
+Profiles so far: the baseline (ladder row 1) and two M2 parsing profiles
+(ladder row 2), which change only the parser and cleaner. M3-M4 add the rest.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from rag_studio import chunk, clean, parse
 
@@ -42,8 +43,15 @@ class IndexProfile:
         """The recorded configuration, minus what only a build knows (digest)."""
         d = asdict(self)
         d["chunker"] = self.chunker.describe()
-        d["parser_version"] = parse.PARSER_VERSION
+        d["parser_version"] = parser_version(self.parser)
         return d
+
+
+def parser_version(parser: str) -> str:
+    if parser == "docling":
+        from rag_studio import parse_docling
+        return parse_docling.version()
+    return parse.PARSER_VERSION
 
 
 BASELINE = IndexProfile(
@@ -64,7 +72,21 @@ BASELINE = IndexProfile(
     ),
 )
 
-PROFILES: dict[str, IndexProfile] = {p.id: p for p in (BASELINE,)}
+# Ladder row 2 (M2): one change from the baseline each, so the scorecard can
+# say which helped. Everything after the parser and cleaner is the baseline's.
+PYMUPDF_CLEAN = replace(
+    BASELINE, id="pymupdf-clean", label="PyMuPDF + cleaning",
+    description="PyMuPDF with the full cleaning order and the injection guard: hidden text dropped, "
+                "\"Th\" repaired, headers and footers moved to metadata, hyphens rejoined. "
+                "Baseline passages, embedding and search.",
+    cleaner=clean.FULL_CLEANER_ID)
+DOCLING_CLEAN = replace(
+    PYMUPDF_CLEAN, id="docling-clean", label="Docling + cleaning",
+    description="Docling's layout, reading order and tables, then the same cleaning and guard. "
+                "Baseline passages, embedding and search.",
+    parser="docling")
+
+PROFILES: dict[str, IndexProfile] = {p.id: p for p in (BASELINE, PYMUPDF_CLEAN, DOCLING_CLEAN)}
 DEFAULT = BASELINE.id
 
 

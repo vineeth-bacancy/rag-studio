@@ -16,6 +16,8 @@ only if the scorecard says it helps.
 ```fish
 ./rag web                 # open http://localhost:3100
 ./rag ingest              # build the search index (about 7 min the first time; instant when nothing changed)
+./rag ingest --profile pymupdf-clean   # PyMuPDF + the full cleaning order and the guard (about 6 min)
+./rag ingest --profile docling-clean   # Docling + cleaning (about 15 min of Docling the first time, then cached)
 ./rag eval --set a b      # the scorecard: answer and score the test questions (about 5 min on qwen3:1.7b)
 ./rag eval --mode retrieval   # recall@5 only, no model: about a second
 ./rag health              # the same checks as the System Health page, in the terminal
@@ -23,15 +25,15 @@ only if the scorecard says it helps.
 ```
 
 The first `./rag web` installs the frontend packages. The Python environment is
-`uv sync`. `./rag eval --help` lists the options (`--model`, `--prompt`,
-`--label`, `--ladder ROW`, `--tag RUN_ID`).
+`uv sync`. `./rag eval --help` lists the options (`--profile`, `--model`,
+`--prompt`, `--label`, `--ladder ROW`, `--tag RUN_ID`).
 
 ## The pages
 
 | Page | What it is for |
 |---|---|
 | **Ask** | Ask a question; get a streamed answer with `[n]` citations that open the cited page, outlined |
-| **Documents** | The PDF library and the page inspector: each parser's text beside the page, defects highlighted (M2) |
+| **Documents** | The PDF library and the page inspector: any page beside PyMuPDF's raw and cleaned text and Docling's, every rule's change highlighted, hidden text outlined |
 | **How it works** | One interactive section per RAG step, on your own documents (M3-M7) |
 | **Evaluation** | Test questions, runs with every question's evidence, and the upgrade ladder |
 | **Indexes** | Index profiles: build locally or on Colab, versions, local-vs-Colab vector check (M4) |
@@ -44,8 +46,8 @@ The first `./rag web` installs the frontend packages. The Python environment is
 |---|---|---|
 | M0 | Repo, `./rag`, the app shell with the trading design system, System Health, `docs/research.md` | **Done** (2026-10-14) |
 | M1 | Baseline parity: PyMuPDF, NFKC, fixed chunks, nomic, exact search in LanceDB, prompt v2, the scorecard; Ask and Evaluation. Ladder row 1 | **Done** (2026-10-15) |
-| M2 | Docling beside PyMuPDF, the cleaning order, sections, reference tagging, the injection guard; the page inspector. Ladder row 2 | Next |
-| M3 | Word-boundary chunks, structure-aware chunks with section labels, hybrid search, a per-section cap; How it works 1-3, 6, 7. Ladder rows 3-4 | |
+| M2 | Docling beside PyMuPDF, the cleaning order, sections, reference tagging, the injection guard; the page inspector. Ladder row 2 | **Done** (2026-10-15) |
+| M3 | Word-boundary chunks, structure-aware chunks with section labels, hybrid search, a per-section cap; How it works 1-3, 6, 7. Ladder rows 3-4 | Next |
 | M4 | Colab gateway and connect code, index profiles (Qwen3-Embedding 0.6B local, 4B/8B Colab, EmbeddingGemma 2), the Indexes page. Ladder row 5 | |
 | M5 | Reranker, contextual retrieval, query rewriting, the agentic loop, chat memory; the Search lab. Ladder rows 6-9 | |
 | M6 | New answer models (thinking off verified), the judge, RAGAS or DeepEval, tracing. Ladder row 10 | |
