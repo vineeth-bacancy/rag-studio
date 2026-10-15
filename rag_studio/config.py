@@ -29,8 +29,10 @@ class Role:
 
 
 ROLES: tuple[Role, ...] = (
-    Role("embed", "Embedding", "Turns passages and questions into vectors for search.",
-         "nomic-embed-text:latest", "ollama"),
+    # Since M4 each index profile names its own embedding model (Indexes);
+    # this is the default index's.
+    Role("embed", "Embedding", "Turns passages and questions into vectors. Each index has its own model; "
+         "this is the default index's.", "nomic-embed-text:latest", "ollama"),
     Role("answer", "Answer", "Writes the answer from the retrieved passages.",
          "qwen3:1.7b", "ollama"),
     Role("rewrite", "Query rewriting", "Rewrites questions and decides when to search again.",

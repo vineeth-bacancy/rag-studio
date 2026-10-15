@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 
 from rag_studio import health, profiles
@@ -41,6 +42,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     profile = profiles.get(args.profile)
     last = {"pct": -1}
+    on = getattr(args, "on", "local")
 
     def progress(stage: str, info: dict) -> None:
         if stage == "clean":
@@ -57,8 +59,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         elif stage == "chunk":
             print(f"Cut {info['passages']} passages ({info['seconds']:.1f} s)")
         elif stage == "embed_start":
-            print(f"Embedding {info['to_embed']} passages with {info['model']}"
-                  f" ({info['reused']} unchanged, reused)")
+            where = " on the Colab runtime" if info.get("on") == "colab" else ""
+            print(f"Embedding {info['to_embed']} passages with {info['model']}{where}"
+                  f" ({info['reused']} unchanged since the last build; {info.get('cached', 0)} already"
+                  " embedded earlier, by this or an interrupted build)")
         elif stage == "embed":
             pct = 100 * info["done"] // max(info["total"], 1)
             if pct // 10 != last["pct"] // 10 or info["done"] == info["total"]:
@@ -75,7 +79,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     print(f"Index profile: {profile.id} ({profile.label})")
     try:
-        result = ingest.build(profile, force=args.force, progress=progress)
+        result = ingest.build(profile, force=args.force, progress=progress, on=on)
+    except KeyboardInterrupt:
+        print("\nStopped. The vectors made so far are kept: building again resumes from them.",
+              file=sys.stderr)
+        return 130
     except Exception as e:  # noqa: BLE001 - a terminal user needs the reason, not a traceback
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -147,6 +155,234 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- ./rag llm
+
+def _clipboard_read() -> str:
+    for cmd in (["xclip", "-o", "-selection", "clipboard"], ["xsel", "--clipboard", "--output"],
+                ["wl-paste", "--no-newline"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if out.returncode == 0:
+            return out.stdout.strip()
+    return ""
+
+
+def _clipboard_write(text: str) -> bool:
+    for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"], ["wl-copy"]):
+        try:
+            out = subprocess.run(cmd, input=text, text=True, timeout=5)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if out.returncode == 0:
+            return True
+    return False
+
+
+def _print_remote(info: dict | None) -> None:
+    if not info:
+        return
+    if not info.get("reachable"):
+        print(f"  Not reachable: {info.get('error')}")
+        return
+    print(f"  Ollama {info['ollama_version']} · {info['latency_ms']} ms")
+    gpus = (info.get("gpu") or {}).get("gpus") or []
+    for g in gpus:
+        print(f"  GPU    {g['name']} · {g['memory_used_mb']:,} / {g['memory_total_mb']:,} MB in use")
+    if not gpus:
+        print(f"  GPU    none ({(info.get('gpu') or {}).get('reason', 'not reported')})")
+    for m in info.get("models", []):
+        loaded = next((x for x in info.get("loaded", []) if x["name"] == m["name"]), None)
+        where = ("on the GPU" if loaded["on_gpu"] else "on the CPU") if loaded else "not loaded"
+        print(f"  Model  {m['name']:<26} {(m['digest'] or '-')[:12]}  {m.get('quantization') or '-':<7} {where}")
+    if info.get("missing"):
+        print(f"  Missing for the Colab indexes: {', '.join(info['missing'])}")
+
+
+def cmd_llm(args: argparse.Namespace) -> int:
+    from rag_studio import colab, remote
+    from rag_studio.llm import OllamaClient, OllamaUnavailable
+
+    if args.action == "colab":
+        token = None
+        if not args.no_token:
+            token = None if args.new_token else remote.remembered_token()
+            if token is None:
+                token = remote.mint_token()
+                remote.remember_token(token)
+        try:
+            version = OllamaClient().version()
+        except OllamaUnavailable:
+            version = None
+        try:
+            cell = colab.build_cell(models=args.models or colab.DEFAULT_MODELS, token=token,
+                                    ollama_version=version)
+        except (ValueError, colab.MissingPayload) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        stats = colab.cell_stats(cell)
+        if args.copy:
+            if not _clipboard_write(cell):
+                print("Error: no clipboard tool found (xclip, xsel or wl-copy). Run without --copy.",
+                      file=sys.stderr)
+                return 1
+            print(f"Copied the setup cell ({stats['kilobytes']} KB, {stats['lines']} lines) to the clipboard.")
+        else:
+            print(cell)
+        note = ("This cell carries a token this computer remembers: after Colab reclaims the runtime, "
+                "re-run the cell and connect with the new URL alone." if token else
+                "This cell carries no token: the runtime makes its own and shows it inside a connect code.")
+        print(f"\nIn Colab: Runtime > Change runtime type > T4 GPU, paste into one cell, run it.\n{note}\n"
+              f"Then: ./rag llm connect   (reads the clipboard)", file=sys.stderr)
+        return 0
+
+    if args.action == "connect":
+        target = (args.target or "").strip()
+        source = "argument"
+        if not target and not args.no_paste:
+            target, source = _clipboard_read(), "clipboard"
+        if not target:
+            print("Error: nothing to connect to. Paste the connect code (or the URL) the Colab cell "
+                  "showed: ./rag llm connect <code>", file=sys.stderr)
+            return 1
+        is_code = remote.looks_like_code(target)
+        print(f"Connecting with the {'connect code' if is_code else 'URL'} from the {source}...")
+        try:
+            result = remote.connect(code=target if is_code else "", url="" if is_code else target,
+                                    token=args.token or "")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        conn = remote.connection()
+        print(f"Saved: {conn['host']} (token kept in {conn['state_path']}, mode 600)")
+        if result["ok"]:
+            for r in result["embedded"]:
+                print(f"  {r['model']:<26} embedded a test sentence: {r['dimensions']} dimensions, {r['seconds']} s")
+            _print_remote(result.get("remote"))
+            if result["missing"]:
+                print(f"Warning: the runtime does not serve {', '.join(result['missing'])}, which the Colab "
+                      "indexes need. Run the setup cell with those models.")
+            print("Remote AI is connected.")
+            return 0
+        print(f"The connection is saved but the test failed at the {result['stage']} step: {result['error']}",
+              file=sys.stderr)
+        print("Fix the runtime (or re-run the cell), then: ./rag llm test", file=sys.stderr)
+        return 1
+
+    if args.action == "status":
+        conn = remote.connection()
+        if not conn["connected"]:
+            print("Remote AI: not connected. Everything runs on this computer.")
+            print(f"  Remembered token for the next cell: {'yes' if conn['token_remembered'] else 'no'}")
+            print("  Connect: ./rag llm colab --copy, run it in Colab, then ./rag llm connect")
+            return 0
+        print(f"Remote AI: connected to {conn['host']} since {conn['connected_at']}")
+        last = (f"failed ({conn['last_error_kind']}): {conn['last_error']} at {conn['last_error_at']}"
+                if conn.get("last_error") else f"passed at {conn['last_ok_at']}" if conn.get("last_ok_at")
+                else "never tested")
+        print(f"  Last test: {last}")
+        _print_remote(remote.probe())
+        return 0
+
+    if args.action == "test":
+        result = remote.smoke_test()
+        if result["ok"]:
+            for r in result["embedded"]:
+                print(f"  {r['model']:<26} {r['dimensions']} dimensions, {r['seconds']} s")
+            print(f"Remote AI works ({result['seconds']} s).")
+            return 0
+        print(f"Error: the test failed at the {result['stage']} step: {result['error']}", file=sys.stderr)
+        return 1
+
+    if args.action == "disconnect":
+        was = remote.connected()
+        remote.disconnect(forget=args.forget_token)
+        print("Disconnected. Everything runs on this computer." if was else "Remote AI was not connected.")
+        if args.forget_token:
+            print("The remembered token is gone: the next setup cell will carry a new one.")
+        return 0
+    return 2
+
+
+# --------------------------------------------------------------------------- ./rag index
+
+def cmd_index(args: argparse.Namespace) -> int:
+    from rag_studio import embed, ingest, store
+
+    if args.action == "list":
+        for p in profiles.PROFILES.values():
+            m = store.active_manifest(p.id)
+            spec = p.embedding
+            where = {"local": "this computer", "colab": "Colab", "either": "either"}[spec.build_on]
+            if m:
+                e = m["embedding"]
+                state = (f"{m['rows']:>5} passages, built {m['built_at'][:16].replace('T', ' ')} "
+                         f"on {'Colab' if e.get('built_on') == 'colab' else 'this computer'}")
+            else:
+                state = "not built"
+            check = embed.last_match(p.id)
+            mark = "" if not check or check.get("passed") is None else (
+                "  match ok" if check["passed"] else "  MATCH FAILED")
+            print(f"{p.id:<36} {embed.model_name(spec):<22} builds on {where:<13} {state}{mark}")
+        return 0
+
+    if args.action == "build":
+        args.profile = args.profile_id
+        return cmd_ingest(args)
+
+    if args.action == "check":
+        profile = profiles.get(args.profile_id)
+        print(f"Vector match check: {profile.label}")
+        try:
+            r = embed.match_check(profile.id)
+        except (LookupError, embed.ProfileMismatch) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        for side, info in r["sides"].items():
+            name = "this computer" if side == "local" else "Colab runtime"
+            if info["available"]:
+                extra = " · ".join(str(info[k]) for k in ("ollama_version", "gpu") if info.get(k))
+                print(f"  {name:<14} embedded {r['passages']} passages and {r['questions']} questions in "
+                      f"{info['seconds']} s{' (' + extra + ')' if extra else ''}")
+            else:
+                print(f"  {name:<14} skipped: {info['reason']}")
+        names = {"local": "this computer", "colab": "Colab", "stored": "the index"}
+        for pr in r["pairs"]:
+            what = {"noise": f"{names[pr['a']]} vs itself, another order",
+                    "index": f"{names[pr['a']]} vs the index (built in batches)",
+                    "cross": f"this computer vs Colab, {pr['what']}"}[pr["kind"]]
+            mark = "" if pr["kind"] != "cross" else ("  [ok]" if pr["min"] >= r["threshold"] else "  [BELOW]")
+            print(f"  {what:<46} n={pr['n']:<3} lowest {pr['min']:.6f}  median {pr['median']:.6f}{mark}")
+        if not r["pairs"]:
+            print("Nothing to compare: no machine could embed for this index right now.")
+            return 1
+        if r["passed"] is None:
+            print(f"Result: one machine only, nothing to compare across (its own noise floor: lowest "
+                  f"{r['noise_floor']:.6f}).")
+            return 0
+        print(f"Result: {'passed' if r['passed'] else 'FAILED'}: every cosine across machines must be at least "
+              f"{r['threshold']} (noise floor on one machine: lowest {r['noise_floor']:.6f}).")
+        return 0 if r["passed"] else 1
+
+    if args.action == "download":
+        spec = next((p.embedding for p in profiles.PROFILES.values()
+                     if p.embedding.model == args.model and p.embedding.backend == embed.ST), None)
+        if spec is None:
+            names = sorted({p.embedding.model for p in profiles.PROFILES.values() if p.embedding.backend == embed.ST})
+            print(f"Error: {args.model} is not a model this app downloads. Known: {', '.join(names)}. "
+                  "Ollama models are installed with: ollama pull <tag>", file=sys.stderr)
+            return 1
+        if embed.st_snapshot(spec):
+            print(f"{embed.model_name(spec)} is already downloaded (revision {spec.revision[:12]}).")
+            return 0
+        print(f"Downloading {embed.model_name(spec)} (revision {spec.revision[:12]}, about 1.5 GB)...")
+        path = embed.st_download(spec)
+        print(f"Done: {path}")
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="./rag")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -158,7 +394,42 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES),
                    help="which index profile to build (default: %(default)s)")
     p.add_argument("--force", action="store_true", help="rebuild even if nothing changed")
+    p.add_argument("--on", choices=("local", "colab"), default="local",
+                   help="embed on this computer or on the connected Colab runtime (default: %(default)s)")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("llm", help="connect a Colab GPU runtime (Remote AI)")
+    llm = p.add_subparsers(dest="action", required=True)
+    q = llm.add_parser("colab", help="print the setup cell to paste into Colab")
+    q.add_argument("--copy", action="store_true", help="copy it to the clipboard instead of printing it")
+    q.add_argument("--no-token", action="store_true",
+                   help="carry no token: the runtime makes its own and hands it back in a connect code")
+    q.add_argument("--new-token", action="store_true", help="make a new remembered token for this cell")
+    q.add_argument("--models", nargs="+", metavar="TAG",
+                   help=f"models the runtime serves (default: {' '.join(('qwen3-embedding:8b', 'qwen3-embedding:0.6b'))})")
+    q = llm.add_parser("connect", help="connect to a runtime with its connect code (or URL)")
+    q.add_argument("target", nargs="?", help="the connect code or URL (default: read the clipboard)")
+    q.add_argument("--token", help="the token, with a bare URL whose token this computer does not remember")
+    q.add_argument("--no-paste", action="store_true", help="never read the clipboard")
+    llm.add_parser("status", help="what is connected, its GPU and models; no inference")
+    llm.add_parser("test", help="a real request: embed one sentence with each model")
+    q = llm.add_parser("disconnect", help="back to this computer only")
+    q.add_argument("--forget-token", action="store_true", help="also forget the token the last cell carried")
+    p.set_defaults(func=cmd_llm)
+
+    p = sub.add_parser("index", help="list, build and check index profiles")
+    idx = p.add_subparsers(dest="action", required=True)
+    idx.add_parser("list", help="every index profile: model, where it builds, state")
+    q = idx.add_parser("build", help="build one profile's index")
+    q.add_argument("profile_id", choices=sorted(profiles.PROFILES), metavar="PROFILE")
+    q.add_argument("--on", choices=("local", "colab"), default="local",
+                   help="embed on this computer or on the connected Colab runtime (default: %(default)s)")
+    q.add_argument("--force", action="store_true", help="rebuild even if nothing changed")
+    q = idx.add_parser("check", help="the vector match check: re-embed 50 passages on each machine")
+    q.add_argument("profile_id", choices=sorted(profiles.PROFILES), metavar="PROFILE")
+    q = idx.add_parser("download", help="download a model that runs in this app (EmbeddingGemma 2)")
+    q.add_argument("model", help="the Hugging Face name, e.g. google/embeddinggemma-2")
+    p.set_defaults(func=cmd_index)
 
     p = sub.add_parser("eval", help="ask the test questions and score the answers")
     p.add_argument("--set", nargs="*", default=[], metavar="ID",

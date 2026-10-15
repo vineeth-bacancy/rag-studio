@@ -127,7 +127,10 @@ Revisit when httpx2's API is documented as a drop-in.
 | Ollama tags: `0.6b` = Q8_0 (639 MB), `4b` = Q4_K_M (2.5 GB), `8b` = Q4_K_M (4.7 GB) | VERIFIED-LIVE (registry) |
 | MTEB English v2 retrieval: 61.83 / 68.46 / 69.44; MMTEB retrieval 64.64 / 69.60 / 70.88 | VERIFIED-DOC (self-reported) |
 | 8B in fp16 produces NaN on some inputs (maintainer advises fp32/bf16) | VERIFIED-DOC (issues) |
-| Ollama vectors match sentence-transformers vectors | **UNVERIFIED** (M4 parity check) |
+| Ollama vectors match sentence-transformers vectors | **UNVERIFIED** (needs the 1.2 GB HF checkpoint, not pulled). Instead: the query instruction works (right passage 0.64 vs 0.13 / 0.22), so EOS is appended |
+| M4, measured: digests `ac6da0dfba84` (0.6b) and `64b933495768` (8b) here and on Colab; `dimensions` truncates and re-normalises (256: max diff 4e-8); 0.6b holds 2.26 GB at the default 4,096 context, 1.34 GB at 1,024; **0.6 passages/s** on this CPU, about 5.3/s and 1.3/s (8b) on a T4 through the free tunnel | VERIFIED-LIVE (2026-10-15) |
+| M4, measured: through Ollama 0.32.6 a vector depends on the previous request (prompt-cache prefix reuse): the same text at cosine 0.9996 (0.6b) / 0.9985 (8b, T4). `num_ctx` itself changes nothing | VERIFIED-LIVE (docs/02-remote-gpu.md) |
+| M4 scorecard: neither size beats nomic-embed-text on our questions (ladder row 5); the card's default web-search instruction was used (one change at a time) | VERIFIED-LIVE (docs/ladder.md) |
 
 **Recommendation:** use the Ollama library tags. Store the literal query
 template and one fixed RAG task string per index (e.g. "Given a question about
@@ -148,7 +151,9 @@ NaN and zeros. 4b is an optional extra row.
 | fp16 gives NaN or degraded vectors; use fp32 (CPU and T4) or bf16 | VERIFIED-DOC |
 | **All Ollama tags are MLX safetensors requiring Ollama ≥ 0.36; on Linux the pull fails** ("requires MLX support"). Open issue #18825 | VERIFIED-LIVE (registry) + DOC |
 | Runs in sentence-transformers ≥ 6.1 / transformers ≥ 5.19; text-only load is 271M parameters | VERIFIED-DOC |
-| Roughly 4× cheaper per token than qwen3-embedding:0.6b on CPU | ESTIMATE |
+| Roughly 4× cheaper per token than qwen3-embedding:0.6b on CPU | ESTIMATE. **Measured M4:** 1.35 vs 0.6 passages/s over whole builds (2.25×) |
+| M4, measured: revision `914f7f89…` (pinned), 271M parameters loaded text-only in float32, 2.2 GB peak RSS, 21.5 s to load; `default_prompt_name` is null; our prefix equals its own `prompt_name="query"` (cosine 1.000000); Matryoshka 768/512/256/128 keeps 5/5/4/3 of a top 5 | VERIFIED-LIVE (2026-10-15) |
+| M4 scorecard: Set A recall 9/9 on both parsers, the only model to find A5; Docling + EmbeddingGemma 2 20 · 3 · 2 (Sets A+D), the best of row 5 | VERIFIED-LIVE (docs/ladder.md) |
 
 **Recommendation:** an in-process **sentence-transformers** profile (fp32,
 text-only, explicit prefixes, renormalise after Matryoshka truncation). This

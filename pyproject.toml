@@ -18,6 +18,12 @@ dependencies = [
     # about 200 MB instead of about 3 GB of CUDA wheels this laptop cannot use.
     "torch>=2.14",
     "torchvision>=0.29",
+    # M4: EmbeddingGemma 2 runs in this process (Ollama's tags for it need the
+    # MLX runner, which Linux lacks). transformers 5.19 added the model;
+    # sentence-transformers 6.1 is what its config requires. M5's reranker
+    # uses the same stack.
+    "sentence-transformers>=6.1",
+    "transformers>=5.19",
 ]
 
 [dependency-groups]
@@ -51,4 +57,5 @@ testpaths = ["tests"]
 markers = [
     "ollama: needs a reachable local Ollama",
     "colab: needs a connected Colab runtime",
+    "st: needs a downloaded sentence-transformers model and about 3 GB of free memory",
 ]

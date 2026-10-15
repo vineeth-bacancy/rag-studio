@@ -131,8 +131,11 @@ class Retriever:
                 f"The {self.profile.label} index was built with a different setup than the "
                 "app now uses for it. Rebuild it with ./rag ingest.")
         self.manifest = manifest
+        # Questions are embedded where the profile says (the 8B on the Colab
+        # runtime), always with the build's model digest.
         self.embedder = Embedder(self.profile.embedding, client=client,
-                                 expect_digest=manifest["embedding"]["digest"])
+                                 expect_digest=manifest["embedding"]["digest"],
+                                 on=self.profile.embedding.query_on)
         self.table = store.open_table(manifest["table"])
 
     @property
@@ -147,7 +150,7 @@ class Retriever:
         m = self.manifest
         return {"profile": m["profile"], "label": m["label"], "table": m["table"],
                 "built_at": m["built_at"], "rows": m["rows"], "config": m["config"],
-                "embedding": m["embedding"]}
+                "embedding": m["embedding"], "query_on": self.embedder.on}
 
     def word_index_info(self) -> dict[str, Any] | None:
         idx = store.fts_index(self.table)

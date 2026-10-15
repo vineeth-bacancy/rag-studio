@@ -113,7 +113,8 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
         t = found["timings"]
         if "embed_ms" in t:
             trace.add("embed", "Embedded the question", t["embed_ms"],
-                      model=r.profile.embedding.model, prefix=r.profile.embedding.query_prefix)
+                      model=r.profile.embedding.model, prefix=r.profile.embedding.query_prefix,
+                      backend=r.embedder.backend)
             yield "stage", trace.steps[-1].as_dict()
         search_ms = t.get("search_ms", 0) + t.get("bm25_ms", 0) + t.get("fuse_ms", 0)
         trace.add("search", f"Searched {r.manifest['rows']:,} passages {_BY[search.method]}", search_ms,

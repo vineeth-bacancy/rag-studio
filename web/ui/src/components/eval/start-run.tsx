@@ -171,20 +171,25 @@ export function StartRun({
             </SelectTrigger>
             <SelectContent>
               {indexes?.profiles.map((p) => (
-                <SelectItem key={p.id} value={p.id} disabled={!p.active}>
+                <SelectItem key={p.id} value={p.id} disabled={!p.active || p.can?.query.ok === false}>
                   {p.label}
-                  {!p.active ? " · not built yet" : ""}
+                  {!p.active ? " · not built yet" : p.can?.query.ok === false ? " · can't be asked now" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           {pickedProfile && <p className="max-w-prose text-xs text-pretty text-muted-foreground">{pickedProfile.description}</p>}
-          {unbuilt.map((p) => (
-            <p key={p.id} className="text-xs text-muted-foreground">
-              {p.label} is not built yet. Run:{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono">./rag ingest --profile {p.id}</code>
+          {/* One line, not one per index: with 13 profiles a list of build
+              commands crowded the form, and some build only on Colab. */}
+          {unbuilt.length > 0 && (
+            <p className="text-xs text-pretty text-muted-foreground">
+              {unbuilt.length === 1 ? `${unbuilt[0].label} is` : `${unbuilt.length} indexes are`} not built yet: build
+              them on the Indexes page.
             </p>
-          ))}
+          )}
+          {pickedProfile?.active && pickedProfile.can?.query.ok === false && (
+            <p className="text-xs text-pretty text-amber-700 dark:text-amber-400">{pickedProfile.can.query.reason}</p>
+          )}
         </div>
 
         <div className="space-y-1.5">

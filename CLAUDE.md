@@ -181,6 +181,28 @@ Warning / Needs attention / Unavailable.
 - `dcg` also blocks heredocs whose text contains `>` or `||` (TypeScript): edit
   UI files with the Edit tool.
 
+## Engine gotchas (learned in M4)
+
+- **A local build can freeze this laptop.** Ollama's default 4,096 context
+  gives qwen3-embedding:0.6b a 1.2 GB compute buffer (2.26 GB total); with
+  2.7 GB free and deep swap the desktop froze and the session ended
+  (2026-10-15). Check `free -m` (not just `ollama ps`) before a long local
+  run; `ingest.check_memory` refuses below `profiles.BUILD_RAM_GB`.
+- **Through Ollama a text's vector depends on what was embedded just before
+  it** (the server reuses a shared prefix's cached keys/values, computed in a
+  differently shaped pass): the same text moves to cosine 0.9996 (0.6B) or
+  0.9985 (the 4-bit 8B on a T4). Batches are worse than one text per request.
+  Compare vectors only one per request, same order, on a fresh cache, and
+  measure a noise floor first (`embed.match_check`). An early "num_ctx moves
+  vectors (0.99963)" was this noise: compared fairly, num_ctx changes nothing.
+- `EmbeddingSpec.options` (`num_ctx: 1024` for Qwen3) is sent on every embed
+  call and recorded; it is there for memory, not meaning.
+- Identical test texts benchmark wrong: Ollama's prompt cache made 32 copies
+  of one passage embed at 16.5/s; real passages run at 0.6/s (Qwen3 0.6B).
+- EmbeddingGemma 2 runs in-process (sentence-transformers, pinned revision,
+  `local_files_only`); pass `prompt=""` to `encode` so no config prompt is
+  added on top of the profile's prefix.
+
 ## UI gotchas (learned in M3)
 
 - SWR `keepPreviousData` keeps the last result in `data` while the new key

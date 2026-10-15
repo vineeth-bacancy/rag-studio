@@ -11,6 +11,8 @@ store section reads the real LanceDB tables. Nothing here changes an index.
 * `store_facts` and `ann_check`: the tables, versions and indexes of a build,
   and how much recall an approximate (ANN) index would lose against exact
   search on this corpus (step 6).
+* `embed_lab`: an index's passages as points (PCA of their vectors), where a
+  question lands, Matryoshka cuts, and what mixing two models does (step 5).
 """
 from __future__ import annotations
 
@@ -221,4 +223,114 @@ def ann_check(profile_id: str) -> dict[str, Any]:
            "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "lancedb_version": lancedb.__version__}
     write_json_atomic(_ann_path(r.table_name), out)
+    return out
+
+
+# --------------------------------------------------------------------------- step 5: embed
+
+# The dimensions a model was trained to be cut to (Matryoshka), from the model
+# cards (research B §1-2). nomic-embed-text is left out: the Ollama tag does
+# not say which version it is.
+MRL_DIMS: dict[str, tuple[int, ...]] = {
+    "qwen3-embedding:0.6b": (1024, 512, 256, 128),
+    "qwen3-embedding:8b": (4096, 1024, 512, 256, 128),
+    "google/embeddinggemma-2": (768, 512, 256, 128),
+}
+EMBED_K = 5
+_projections: dict[str, dict[str, Any]] = {}
+
+
+def _projection(table_name: str) -> dict[str, Any]:
+    """A build's vectors, unit length, and their PCA to 2-D. Cached per build:
+    a build never changes once written (a rebuild is a new table)."""
+    import numpy as np
+    if table_name in _projections:
+        return _projections[table_name]
+    t = store.open_table(table_name).to_arrow().select(["chunk_id", "doc_id", "page", "vector", "text"])
+    x = np.asarray(t["vector"].to_pylist(), dtype=np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    mean = x.mean(axis=0)
+    _, s, vt = np.linalg.svd(x - mean, full_matrices=False)
+    axes = vt[:2]
+    coords = (x - mean) @ axes.T
+    share = (s ** 2) / float((s ** 2).sum())
+    proj = {"x": x, "mean": mean, "axes": axes, "explained": float(share[:2].sum()),
+            "ids": t["chunk_id"].to_pylist(), "docs": t["doc_id"].to_pylist(), "pages": t["page"].to_pylist(),
+            "texts": t["text"].to_pylist(),
+            "points": [[round(float(a), 4), round(float(b), 4)] for a, b in coords]}
+    if len(_projections) >= 4:                       # a few builds' worth, at most ~25 MB each
+        _projections.pop(next(iter(_projections)))
+    _projections[table_name] = proj
+    return proj
+
+
+def _nearest(x, q, k: int) -> list[tuple[int, float]]:
+    import numpy as np
+    scores = x @ q
+    top = np.argsort(-scores)[:k]
+    return [(int(i), float(scores[i])) for i in top]
+
+
+def embed_lab(profile_id: str, question: str | None = None, mix_with: str | None = None) -> dict[str, Any]:
+    """Every passage of one index as a point (PCA of its vectors), and, for a
+    question: the exact text embedded, where it lands, its true nearest
+    passages (by cosine in all dimensions), how they survive cutting the
+    vectors shorter (Matryoshka), and what happens if a question embedded by
+    another model is searched in this index."""
+    import numpy as np
+    r = retriever(profile_id)
+    spec = r.profile.embedding
+    proj = _projection(r.table_name)
+    titles = {d["doc_id"]: d["title"] for d in r.manifest["documents"]}
+    out: dict[str, Any] = {
+        "profile": profile_id, "label": r.profile.label, "model": spec.model,
+        "model_name": profiles.MODEL_NAMES.get(spec.model, spec.model),
+        "dimensions": spec.dimensions, "doc_prefix": spec.doc_prefix, "query_prefix": spec.query_prefix,
+        "embedded_on": r.embedder.backend, "rows": len(proj["ids"]), "explained": proj["explained"],
+        "documents": [{"doc_id": d, "title": titles.get(d, d)} for d in dict.fromkeys(proj["docs"])],
+        "points": [{"id": i, "doc": d, "page": p, "xy": xy}
+                   for i, d, p, xy in zip(proj["ids"], proj["docs"], proj["pages"], proj["points"])],
+        "question": None,
+    }
+    if not question:
+        return out
+    t = time.perf_counter()
+    q = np.asarray(r.embedder.query(question), dtype=np.float32)
+    ms = (time.perf_counter() - t) * 1000
+    x = proj["x"]
+    full = _nearest(x, q, EMBED_K)
+
+    def hit(i: int, score: float, rank: int) -> dict[str, Any]:
+        return {"rank": rank, "id": proj["ids"][i], "doc": proj["docs"][i], "page": proj["pages"][i],
+                "score": round(score, 4), "xy": proj["points"][i], "text": proj["texts"][i][:240]}
+
+    xy = (q - proj["mean"]) @ proj["axes"].T
+    top_ids = [proj["ids"][i] for i, _ in full]
+    mrl = []
+    for d in MRL_DIMS.get(spec.model, ()):
+        xd = x[:, :d] / np.linalg.norm(x[:, :d], axis=1, keepdims=True)
+        qd = q[:d] / np.linalg.norm(q[:d])
+        got = [proj["ids"][i] for i, _ in _nearest(xd, qd, EMBED_K)]
+        mrl.append({"dimensions": d, "ids": got, "kept": len(set(got) & set(top_ids)),
+                    "bytes": len(proj["ids"]) * d * 4})
+    out["question"] = {
+        "text": question, "sent": spec.query_prefix + question, "embed_ms": round(ms, 1),
+        "xy": [round(float(xy[0]), 4), round(float(xy[1]), 4)],
+        "nearest": [hit(i, s, n) for n, (i, s) in enumerate(full, start=1)],
+        "matryoshka": mrl,
+    }
+    if mix_with:
+        other = profiles.get(mix_with)
+        oname = profiles.MODEL_NAMES.get(other.embedding.model, other.embedding.model)
+        if other.embedding.dimensions != spec.dimensions:
+            out["mix"] = {"profile": mix_with, "model_name": oname, "possible": False,
+                          "reason": f"{oname} makes {other.embedding.dimensions}-dimension vectors and this index holds "
+                                    f"{spec.dimensions}-dimension ones: they cannot even be compared."}
+        else:
+            o = retriever(mix_with)
+            wrong = np.asarray(o.embedder.query(question), dtype=np.float32)
+            got = _nearest(x, wrong, EMBED_K)
+            out["mix"] = {"profile": mix_with, "model_name": oname, "possible": True,
+                          "nearest": [hit(i, s, n) for n, (i, s) in enumerate(got, start=1)],
+                          "kept": len({proj["ids"][i] for i, _ in got} & set(top_ids))}
     return out

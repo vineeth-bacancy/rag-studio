@@ -6,6 +6,7 @@ import { ArrowLeft, ArrowRight, ChevronRight } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ChunkLab } from "@/components/learn/chunk-lab";
 import { CleanLab } from "@/components/learn/clean-lab";
+import { EmbedLab } from "@/components/learn/embed-lab";
 import { ParseLab } from "@/components/learn/parse-lab";
 import { SearchLab } from "@/components/learn/search-lab";
 import { StoreLab } from "@/components/learn/store-lab";
@@ -17,6 +18,7 @@ const WIDGETS: Record<string, React.ComponentType> = {
   parse: ParseLab,
   clean: CleanLab,
   chunk: ChunkLab,
+  embed: EmbedLab,
   store: StoreLab,
   search: SearchLab,
 };

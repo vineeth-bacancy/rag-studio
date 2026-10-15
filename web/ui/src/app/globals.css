@@ -22,6 +22,7 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-chart-6: var(--chart-6);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -165,6 +166,11 @@
   --chart-3: #b47825;  /* amber ramp, mid */
   --chart-4: #8a5600;  /* amber ramp, dark */
   --chart-5: #9e4aa4;  /* violet: second categorical identity */
+  /* magenta: the third identity in all-pairs forms (scatter). Blue + amber-mid
+     (chart-3) + magenta passed every check with --pairs all, light and dark
+     (2026-10-15). Never put blue and violet together in an all-pairs form:
+     protan ΔE 4.6 (FAIL). */
+  --chart-6: #d55181;
 }
 
 .dark {
@@ -173,6 +179,7 @@
   --chart-3: #c18434;
   --chart-4: #a06604;
   --chart-5: #bb66c1;
+  --chart-6: #d55181;
 }
 
 /* ---------------------------------------------------------------------------

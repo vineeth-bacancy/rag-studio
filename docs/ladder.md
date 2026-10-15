@@ -24,13 +24,93 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 4b | 3b + hybrid search | 8/9 | **6/6** | **10/11** | 10 · 0 · 1 | 9 · 2 · 3 | M3 ✓ |
 | 4c | 3c + limit per section (dense, 2 per section) | **9/9** | **6/6** | **10/11** | 9 · 0 · 2 | 9 · 1 · 4 | M3 ✓ |
 | 4d | 3b + limit per section (dense, 2 per section) | **9/9** | **6/6** | **10/11** | 9 · 0 · 2 | **10 · 1 · 3** | M3 ✓ |
-| 5 | Qwen3-Embedding 0.6B, then 8B on Colab | - | - | - | - | - | M4 |
+| 5a | 3a with Qwen3-Embedding 0.6B (built on Colab, asked here) | 8/9 | **6/6** | **10/11** | 8 · 0 · 3 | 9 · 2 · 3 | M4 ✓ |
+| 5b | 3b with Qwen3-Embedding 0.6B (built on Colab, asked here) | 7/9 | **6/6** | **10/11** | 7 · 0 · 4 | 8 · 1 · 5 | M4 ✓ |
+| 5c | 3a with EmbeddingGemma 2 (in the app) | **9/9** | **6/6** | **10/11** | **10 · 0 · 1** | 8 · 2 · 4 | M4 ✓ |
+| 5d | 3b with EmbeddingGemma 2 (in the app) | **9/9** | 5/6 | **10/11** | **11 · 0 · 0** | 9 · 3 · **2** | M4 ✓ |
+| 5e | 3a with Qwen3-Embedding 8B (Colab) | 8/9 | **6/6** | **10/11** | 9 · 0 · 2 | 8 · 3 · 3 | M4 ✓ |
+| 5f | 3b with Qwen3-Embedding 8B (Colab) | 8/9 | **6/6** | **10/11** | 9 · 0 · 2 | **10** · 2 · **2** | M4 ✓ |
 | 6 | Reranking (Qwen3-Reranker) | - | - | - | - | - | M5 |
 | 7 | Contextual retrieval | - | - | - | - | - | M5 |
 | 8 | Query rewriting | - | - | - | - | - | M5 |
 | 9 | The agentic loop | - | - | - | - | - | M5 |
 | 10 | A new answer model | - | - | - | - | - | M6 |
 | 11 | Figure paths | - | - | - | - | - | M7 |
+
+## Row 5, measured 2026-10-15
+
+**One change from row 3: the embedding model**, on both structure-aware
+indexes (the user's choice: both parsers). Everything else is row 3's: the same
+passages and section labels, prompt v3, dense exact search, top 5, qwen3:1.7b,
+thinking off, temperature 0. The rows compare against **3a** (PyMuPDF +
+structure, nomic-embed-text: 19 · 0 · 6) and **3b** (Docling + structure,
+nomic: 20 · 1 · 4).
+
+| Variant | Model, where | Run | Sets A+D | Recall A / B / D | Run time |
+|---|---|---|---|---|---|
+| 5a | Qwen3-Embedding 0.6B (1,024 d), built on the T4, asked here | `20261015-162847-f165` | 17 · 2 · 6 | 8/9 · 6/6 · 10/11 | 864 s |
+| 5b | as 5a, Docling | `20261015-164313-5e5b` | **15 · 1 · 9** | 7/9 · 6/6 · 10/11 | 676 s |
+| 5c | EmbeddingGemma 2 (768 d), in the app | `20261015-152925-06aa` | 18 · 2 · 5 | **9/9** · 6/6 · 10/11 | 469 s |
+| 5d | as 5c, Docling | `20261015-153719-e38d` | **20 · 3 · 2** | **9/9** · 5/6 · 10/11 | 526 s |
+| 5e | Qwen3-Embedding 8B (4,096 d), on the T4 | `20261015-160114-55ff` | 17 · 3 · 5 | 8/9 · 6/6 · 10/11 | 703 s * |
+| 5f | as 5e, Docling | `20261015-161859-51c0` | 19 · 2 · 4 | 8/9 · 6/6 · 10/11 | 586 s * |
+
+\* 5e and 5f embedded their questions on the T4 while it was building
+another index: 1-10 s per question instead of about 0.5 s. Timings only;
+retrieval is the same (below).
+
+**What row 5 says.**
+
+1. **D9, the Spanish question, is fixed by every new model.** nomic never
+   finds its page (rank over 50, rows 3a/3b); the new models put it at rank
+   1-4, and it passes in five of six variants (5b ranks it 4 and answers
+   wrong). The multilingual target of M4 is met.
+2. **Only EmbeddingGemma 2 finds A5** (Chapter 3's summary, not its
+   bibliography): rank 1 (PyMuPDF) and 2 (Docling); every Qwen variant misses
+   it (rank 6-11), as nomic did. It is also the only model with Set A recall
+   9/9 on both parsers without the limit per section.
+3. **Docling + EmbeddingGemma 2 (5d) is the only variant at least as good as
+   row 3 on every count but one**: Pass 20 (= 3b), Wrong 2 (3b: 4), Refused 3
+   (3b: 1). It passes D6 (Thailand's forecast, a table row) and the T2 trap,
+   which no row-3 variant did. It loses B4 ("global growth": rank 8; 3b had it
+   at 1) and refuses D7 and D10.
+4. **The Qwen3 models do not help here.** A4 (South Asia) is answered wrong by
+   all four Qwen variants although its page ranks 1-2: their neighbouring
+   passages mislead the small answer model. D10 drops out of the top 5 with
+   every new model (rank 13 to over 50; nomic had it at 3-4). Qwen3 0.6B on
+   Docling is the worst variant on the ladder so far (9 Wrong), and A6, M3's
+   target, slips to rank 6 there. The 8B is no better than the much smaller
+   EmbeddingGemma 2. Their query instruction is the model card's default
+   web-search one; a document-specific instruction is an experiment for later,
+   not something to assume.
+5. **Cost.** EmbeddingGemma 2 builds here in 15-17 minutes (1.35 passages/s)
+   and needs 2.2 GB of RAM in the app; Qwen3 0.6B builds here in about 35-40
+   minutes or on the T4 in 4 minutes; the 8B needs the T4 for building and
+   for every question.
+
+**Defaults are unchanged** (baseline + prompt v2, dense). With row 5 the
+candidates are 3b and 5d; the user decides (one run each, 25 scored
+questions: a difference of two is a hint, not proof).
+
+### The vector match check (spec §2.2)
+
+Measured on the four Qwen3 indexes (`./rag index check`), each text embedded
+one per request (docs/02-remote-gpu.md explains why):
+
+| Index | This computer vs Colab, 50 passages / 5 questions | Noise floor (itself, another order): here / Colab | Vs the stored index: here / Colab |
+|---|---|---|---|
+| PyMuPDF, Qwen3 0.6B | **0.99954** / 0.99963: passed | 1.00000 / 0.99967 | 0.99954 / 0.99966 |
+| Docling, Qwen3 0.6B | **0.99953** / 0.99963: passed | 0.99972 / 0.99971 | 0.99954 / 0.99960 |
+| PyMuPDF, Qwen3 8B | (Colab only) | - / 0.99888 | - / 0.99834 |
+| Docling, Qwen3 8B | (Colab only) | - / 0.99899 | - / 0.99824 |
+
+EmbeddingGemma 2 (in the app, not Ollama) is exactly reproducible: noise
+floor and the stored vectors both 1.000000.
+
+Ranks under the 8B's noise: a retrieval-only rerun of each 8B index
+(`20261015-170219-2b1f`, `…170254-1207`) returned the **same top 5 for 61 of
+62 questions**; the one difference (B1) swapped two answer pages whose
+cosines differed by 0.0004. No answer page moved.
 
 ## Rows 3 and 4, measured 2026-10-15
 

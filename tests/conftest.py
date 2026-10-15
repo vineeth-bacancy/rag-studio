@@ -24,12 +24,62 @@ def _ollama_up() -> bool:
         return False
 
 
+def _colab_up() -> bool:
+    """A Colab runtime is connected (in the real state folder) and answers."""
+    from rag_studio import remote
+    try:
+        return remote.connected() and remote.probe()["reachable"]
+    except Exception:  # noqa: BLE001 - any failure means skip
+        return False
+
+
+def _st_ready() -> bool:
+    """EmbeddingGemma 2 is on disk and loading it (2.2 GB) cannot push this
+    laptop into swap: the same bar a local build must clear."""
+    from rag_studio import embed, ingest, profiles
+    free = ingest.available_ram_gb()
+    return (embed.st_snapshot(profiles.EMBEDDINGGEMMA2) is not None and free is not None
+            and free >= profiles.BUILD_RAM_GB[profiles.EMBEDDINGGEMMA2.model])
+
+
 def pytest_collection_modifyitems(config, items):
     if any("ollama" in item.keywords for item in items) and not _ollama_up():
         skip = pytest.mark.skip(reason=f"Ollama is not reachable at {OLLAMA_URL}")
         for item in items:
             if "ollama" in item.keywords:
                 item.add_marker(skip)
+    if any("st" in item.keywords for item in items) and not _st_ready():
+        skip = pytest.mark.skip(reason="EmbeddingGemma 2 is not downloaded, or under 3.2 GB of memory is free")
+        for item in items:
+            if "st" in item.keywords:
+                item.add_marker(skip)
+    if any("colab" in item.keywords for item in items) and not _colab_up():
+        skip = pytest.mark.skip(reason="No Colab runtime is connected (./rag llm connect)")
+        for item in items:
+            if "colab" in item.keywords:
+                item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def neutral_memory(monkeypatch):
+    """Builds in tests use fake models: never refuse them for the host's
+    free memory. Tests of the memory guard set it themselves."""
+    from rag_studio import ingest
+    monkeypatch.setattr(ingest, "available_ram_gb", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def private_state(request, tmp_path_factory, monkeypatch):
+    """No test reads or writes the real ~/.local/state/rag-studio (the Colab
+    token lives there), except the ones marked `colab`, which need the real
+    connection."""
+    if "colab" in request.keywords:
+        yield None
+        return
+    from rag_studio import paths
+    folder = tmp_path_factory.mktemp("state")
+    monkeypatch.setattr(paths, "STATE", folder)
+    yield folder
 
 
 @pytest.fixture

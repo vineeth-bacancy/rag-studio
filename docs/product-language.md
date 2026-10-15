@@ -56,6 +56,12 @@ carry none (ports, file paths, Python names) move one layer down.
 | The step-by-step upgrade comparison | **the ladder** | | waterfall |
 | A job the app gives a model | **role** (Answer, Embedding, Query rewriting, Context lines, Judge, Vision, Reranker) | | task, agent |
 | The exact refusal | "I could not find this in the documents." | | "Not found", "No answer" |
+| The rented GPU machine | **Colab runtime** (primary UI: **Remote AI**) | the gateway, the tunnel | server, instance, backend (in primary UI) |
+| The one cell pasted into Colab | **setup cell** | bootstrap | script, notebook |
+| The string that carries a runtime's URL and token | **connect code** | `rsc1.` prefix | handoff code, token string |
+| Re-embedding stored passages on each computer and comparing | **vector match check** | cosine ≥ 0.999 | parity test |
+| Making an index | **build** (Build here, Build on Colab) | ingest | index (as a verb), train |
+| Cutting vectors shorter | **Matryoshka** (shorter vectors) | MRL, `dimensions` | truncation (alone) |
 
 ### Answer outcomes (scorecard)
 

@@ -310,6 +310,13 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
     lock = _RunLock()
     lock.acquire()
     try:
+        # A build on this computer holds Ollama and the CPU: questions would
+        # wait behind its batches and every timing would be meaningless.
+        from rag_studio import ingest
+        building = ingest.active_build()
+        if building and building.get("on", "local") == "local":
+            raise RunBusy(f"An index is being built on this computer ({building.get('profile', 'unknown')}). "
+                          "Wait for it to finish, then start the run.")
         client = client or OllamaClient()
         r = active_retriever(spec.profile)
         if spec.search_spec.method != "dense" and not r.has_word_index():
@@ -418,7 +425,7 @@ LADDER: list[dict[str, Any]] = [
     {"row": 2, "change": "Docling and the full cleaning order", "milestone": "M2"},
     {"row": 3, "change": "Structure-aware passages with section labels", "milestone": "M3"},
     {"row": 4, "change": "Hybrid search (dense + BM25)", "milestone": "M3"},
-    {"row": 5, "change": "Qwen3-Embedding 0.6B, then 8B on Colab", "milestone": "M4"},
+    {"row": 5, "change": "A newer embedding model: Qwen3-Embedding 0.6B, EmbeddingGemma 2, Qwen3-Embedding 8B (Colab)", "milestone": "M4"},
     {"row": 6, "change": "Reranking (Qwen3-Reranker)", "milestone": "M5"},
     {"row": 7, "change": "Contextual retrieval", "milestone": "M5"},
     {"row": 8, "change": "Query rewriting", "milestone": "M5"},

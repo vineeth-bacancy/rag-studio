@@ -1,6 +1,6 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-15 ~16:20 IST, at the end of M3. A new session should read, in
+Updated 2026-10-15 ~22:45 IST, at the end of M4. A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -23,7 +23,72 @@ questions.
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
 
-## M3 status: complete (staged, not committed)
+## M4 status: complete (staged, not committed)
+
+**User decisions (2026-10-15):** row 5 on **both parsers** (6 profiles:
+{pymupdf, docling}-structure × {Qwen3-Embedding 0.6B, EmbeddingGemma 2,
+Qwen3-Embedding 8B}); the **8B is built and queried on Colab only** (no local
+pull). **Defaults stay baseline + prompt v2**: the user did not pick "3b
+default"; ask again with row 5 (candidates 3b and 5d).
+
+**Engine:** `remote.py` (connection + remembered token in
+`~/.local/state/rag-studio/`, 0600 atomic; `rsc1.` connect code; connect →
+smoke test → probe; disconnect), `colab.py` (the setup cell from
+`tools/colab/`), `llm.py` remote client (own timeouts and wording, 401 → auth,
+tunnel error pages, `/api/gpu`, embed `options`), `embed.py` (backends: Ollama
+local/Colab and sentence-transformers in-process with a 2.2 GB free-memory
+guard; `RemoteUnavailable`; the vector cache per digest/prefix/options/machine
+now also makes builds resumable; the vector match check), `profiles.py`
+(row-5 profiles; `EmbeddingSpec.describe()` keeps every earlier config
+byte-identical; `build_on`/`query_on` are policy, not config; `BUILD_RAM_GB`,
+`EMBED_RATE`), `ingest.py` (`on=local|colab`, one build at a time, never
+beside an eval, memory guard, job files, cancel), `indexes.py` (the Indexes
+page's facts), `learn.embed_lab` (step 5), CLI `./rag llm …` and
+`./rag index list|build|check|download`, `ingest --on`. **Colab:**
+`tools/colab/server.py` (allowlist with 404 before auth, bearer token, 8 MB
+cap, gzip for big replies (not yet measured on a runtime), content-free log)
+and `start.sh` (7 checked steps, Ollama pinned to the laptop's version, many
+models, exact-tag GPU residency). **API:** `/api/llm/{status,colab,connect,
+test,disconnect}`, `/api/indexes/{id}/{build,job,cancel,check}`,
+`/api/learn/embed`. **UI:** Settings › Model backend (connect dialog, setup
+cell), the Indexes page (model × parser, live builds, match check), How it
+works step 5 (PCA map, Matryoshka, mixed models), pickers honour "can be asked
+now". New dependency: sentence-transformers 6.1.0 + transformers 5.19.0.
+Models: qwen3-embedding:0.6b pulled; EmbeddingGemma 2 in the HF cache
+(revision 914f7f89…).
+
+| Check | Result |
+|---|---|
+| Tests | `./rag test` **288 passed** (172 at M3), incl. the real local-vs-Colab test while connected |
+| UI | typecheck and lint clean; QA 40/40 page × width × theme after fixes, console clean, 11 findings all fixed (M4-01 the user's connect dialog bug): `docs/qa/2026-10-15-m4-remote-indexes-embed.md` |
+| Remote connect and test from the UI | done on the real T4 (URL + remembered token); the user connected first with the CLI |
+| Vector match check (spec) | Qwen3 0.6B, this computer vs T4: **0.99954 / 0.99953** (passages), 0.99963 (questions): passed |
+
+**Row 5** (Sets A+D, Pass · Refused · Wrong; vs 3a 19·0·6, 3b 20·1·4):
+5a PyMuPDF+Qwen3 0.6B 17·2·6 (`20261015-162847-f165`); 5b Docling+0.6B
+15·1·9 (`…164313-5e5b`); 5c PyMuPDF+EmbeddingGemma 2 18·2·5
+(`…152925-06aa`); **5d Docling+EmbeddingGemma 2 20·3·2** (`…153719-e38d`);
+5e PyMuPDF+8B 17·3·5 (`…160114-55ff`); 5f Docling+8B 19·2·4
+(`…161859-51c0`). D9 (Spanish) fixed by every new model; only EmbeddingGemma 2
+finds A5 and has Set A recall 9/9; Qwen3 does not beat nomic. Details and
+reasons: `docs/ladder.md` (Row 5).
+
+**Findings worth keeping** (CLAUDE.md, M4 gotchas): a local build at Ollama's
+default context froze the laptop (memory guard now); through Ollama a
+vector depends on the previous request (prompt-cache prefix reuse; 0.9996 for
+0.6B, 0.9985 for the 8B), so the match check embeds one text per request and
+measures a noise floor; an early "num_ctx moves vectors" claim was that noise
+(corrected everywhere); EmbeddingGemma 2 in-process is exactly reproducible;
+the tunnel, not the T4, limits Colab builds (1.7 MB JSON per 8B batch).
+
+If `data/` is wiped: the M2/M3 commands, then `./rag index build
+<parser>-structure-embeddinggemma2` (~15-17 min each, here), connect Colab and
+`./rag index build <parser>-structure-qwen3-0.6b --on colab` (~4 min) and
+`…-qwen3-8b --on colab` (~16-18 min), then the row-5 evals:
+`./rag eval --set a b d --profile <p> --prompt v3 --ladder 5 --label
+"<Parser> + structure, <Model>"`.
+
+## M3 status: complete (committed by the user as eb917ab)
 
 **Engine:** `chunk.py` (word-boundary fix `FIXED_SNAP`; `STRUCTURE`: paragraphs
 and Docling tables packed ≤ 1,000 chars within one section/kind, heading-only
@@ -127,7 +192,7 @@ Docling + ~7 min embedding), then the row-1 commands below and
 (~11 min each). Row 1: `./rag eval --set a b --ladder 1 --label Baseline` and
 `./rag eval --set d --ladder 1 --label "Baseline: edge cases"`.
 
-## Decisions settled (M1-M3)
+## Decisions settled (M1-M4)
 
 - **The spec wins over M0 research** where they differed (research.md §0).
 - **No Ollama upgrade**; Ollama stays 0.32.6 (EmbeddingGemma 2 goes through Python).
@@ -140,12 +205,23 @@ Docling + ~7 min embedding), then the row-1 commands below and
 - **Hybrid search and the limit per section are switches, off by default**
   (row 4: neither improves the scorecard on labelled passages).
 - **Prompt v4 is opt-in** (row 3: a wash against v3).
+- **Row 5 on both parsers; the 8B queried on Colab only** (user, M4).
+- **Where an index embeds is policy, not config**; the match check embeds one
+  text per request and judges only across machines.
 
 ## Not done, on purpose (where it goes)
 
 - Docling's letter-spaced fragments and spaced footnote numbers: shown, not repaired.
 - Editable test questions in the UI: M8. Set C (figure question): M7.
-- How it works widgets: steps 4, 5, 8 (M4-M5), 9, 10, 12 (M6), 11, 13 (M7).
+- How it works widgets: steps 4, 8 (M5), 9, 10, 12 (M6), 11, 13 (M7). Step 5 done in M4.
+- M4: the gateway's gzip is unmeasured on a real runtime; Qwen3 Ollama-vs-ST
+  parity unverified (needs a 1.2 GB HF download); a document-specific Qwen3
+  query instruction is an untried experiment (row 5 used the card's default);
+  no 4B profile (optional in research); no local 8B (user's choice); the
+  rerank service on Colab is M5; answer/vision/judge on the GPU and their
+  optional loud fallback are M6; EmbeddingGemma 2 images are M7. A connect
+  code was never pasted into the browser on a real runtime (the URL +
+  remembered token path was).
 - PyMuPDF tables are still flattened (no `find_tables`): Docling's whole-table
   passages are what helped D6/A8. An exact-match column for numbers in BM25
   was not built (research.md §8).
@@ -153,16 +229,16 @@ Docling + ~7 min embedding), then the row-1 commands below and
   cut the page-level 80th finds; not tuned (it is an option, not a default).
 - Scrollbars tested in Chrome only.
 
-## Next: M4 (Colab and index profiles)
+## Next: M5 (the reranker and smarter retrieval)
 
-Spec §17 M4: the Colab gateway and setup cell (adapt `~/Dev/trading`'s design,
-spec §13), the connect code, settings card and CLI; **Qwen3-Embedding 0.6B
-locally** (`qwen3-embedding:0.6b`, approved pull: check `ollama ps` first) and
-**8B on Colab**; **EmbeddingGemma 2 text** via sentence-transformers (research
-§4); the Indexes page; the local-vs-Colab vector-match check. Done when: remote
-connect and test from the UI; the match check passes; ladder row 5 per profile.
-Row 5 should build on the default the user picks after M3 (3b recommended).
-D9 (Spanish) is the question the multilingual model is expected to fix.
+Spec §17 M5: Qwen3-Reranker (0.6B local via sentence-transformers CrossEncoder,
+research §6; 4B on Colab behind a `POST /rerank` service in the gateway: same
+token, cap, allowlist; test it like `tests/test_colab_gateway.py`), contextual
+retrieval (bulk on Colab), query rewriting, the agentic loop, chat memory; the
+Search lab's reranked column; How it works 4 and 8. Done when "global growth"
+(B4) is a Hit. First: the user's default decision (3b or 5d) sets the base for
+rows 6-9. Approved pull: Qwen3-Reranker-0.6B (HF, 1.19 GB). Measure the gzip
+gateway on the next Colab session.
 
 ## Gotchas hit so far
 

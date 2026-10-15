@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 import sse
 from guard import RequestGuard, allowed_origins
-from rag_studio import __version__, answer, eval as evaluation, health, learn, library, paths, profiles, store
+from rag_studio import (__version__, answer, colab, embed, eval as evaluation, health, indexes, ingest, learn,
+                        library, paths, profiles, remote, store)
 from rag_studio.config import MODEL_NOTES, role_model
 from rag_studio.embed import ProfileMismatch
 from rag_studio.llm import OllamaClient, OllamaUnavailable
@@ -165,21 +166,181 @@ def get_cleaning(doc_id: str) -> dict:
 
 @app.get("/api/indexes")
 def get_indexes() -> dict:
-    """Each index profile and its active build's manifest (None until built).
-    `word_index` says whether BM25 and hybrid search can run on it; `labels`
-    whether its passages carry section labels (prompt v4 expects them)."""
-    out = []
-    for p in profiles.PROFILES.values():
-        active = store.active_manifest(p.id)
-        out.append({"id": p.id, "label": p.label, "description": p.description,
-                    "parser": p.parser, "chunker": p.chunker.method, "labels": p.chunker.labels,
-                    "word_index": bool(active and active.get("word_index")),
-                    "active": active, "builds": len(store.builds(p.id))})
-    return {"profiles": out, "search_methods": [
-        {"id": "dense", "label": "Dense", "explain": "By meaning: the nearest vectors."},
-        {"id": "bm25", "label": "BM25", "explain": "By words: the full-text index."},
-        {"id": "hybrid", "label": "Hybrid", "explain": "Both lists, fused by rank (RRF)."},
-    ]}
+    """Each index profile: its embedding setup, active build's manifest (None
+    until built), build history, last build job and vector match check, and
+    whether it can be built here, built on Colab and queried now (with the
+    reason when not). `word_index` says whether BM25 and hybrid search can run
+    on it; `labels` whether its passages carry section labels."""
+    return indexes.overview()
+
+
+class BuildRequest(BaseModel):
+    on: str = Field("local", pattern="^(local|colab)$")
+    force: bool = False
+
+
+# Cancel flags for builds started by this process. A build started in the
+# terminal stops there (Ctrl-C).
+_build_cancel: dict[str, threading.Event] = {}
+
+
+@app.post("/api/indexes/{profile_id}/build", status_code=202)
+def post_build(profile_id: str, req: BuildRequest) -> dict:
+    """Start building one profile's index in the background. Poll
+    GET /api/indexes/{id}/job for progress. Refused (409) while another build
+    runs, while an evaluation uses this computer's AI, or when memory is short."""
+    prof = _profile(profile_id)
+    try:
+        ingest.check_where(prof, req.on)
+        ingest.check_memory(prof, req.on)
+    except ingest.BuildRefused as e:
+        _fail(409, str(e))
+    if ingest.active_build():
+        _fail(409, "Another index is being built. Wait for it to finish, or cancel it.")
+    started = threading.Event()
+    failure: list[str] = []
+    cancel = _build_cancel[prof.id] = threading.Event()
+
+    def work() -> None:
+        def progress(stage: str, info: dict) -> None:
+            started.set()
+        try:
+            ingest.build(prof, force=req.force, on=req.on, progress=progress, cancel=cancel.is_set)
+        except Exception as e:  # noqa: BLE001 - recorded in the job file by ingest.build
+            failure.append(str(e) or type(e).__name__)
+        finally:
+            started.set()
+            _build_cancel.pop(prof.id, None)
+
+    threading.Thread(target=work, name=f"build-{prof.id}", daemon=True).start()
+    started.wait(timeout=30)
+    job = ingest.last_job(prof.id)
+    if failure and not (job and job.get("started_at")):
+        _fail(409, failure[0])
+    return {"profile": prof.id, "job": job}
+
+
+@app.get("/api/indexes/{profile_id}/job")
+def get_build_job(profile_id: str) -> dict:
+    """The latest build job of a profile: stage, counts, and how it ended."""
+    return {"profile": _profile(profile_id).id, "job": ingest.last_job(profile_id)}
+
+
+@app.post("/api/indexes/{profile_id}/cancel")
+def cancel_build(profile_id: str) -> dict:
+    flag = _build_cancel.get(_profile(profile_id).id)
+    if flag is None:
+        _fail(404, "This build is not running here. A build started in the terminal stops with Ctrl-C.")
+    flag.set()
+    return {"profile": profile_id, "cancelling": True}
+
+
+_check_lock = threading.Lock()
+
+
+@app.post("/api/indexes/{profile_id}/check")
+def post_match_check(profile_id: str) -> dict:
+    """The vector match check: 50 passages and 5 questions embedded one per
+    request on this computer and on the Colab runtime, each machine's noise
+    floor (itself in another order), and the stored vectors. Up to four
+    minutes on this CPU (Qwen3 0.6B embeds about 0.6 passages a second)."""
+    prof = _profile(profile_id)
+    building = ingest.active_build()
+    if building and building.get("on", "local") == "local":
+        _fail(409, "An index is being built on this computer. Check again when it finishes.")
+    if not _check_lock.acquire(blocking=False):
+        _fail(409, "A check is already running. Wait for it to finish.")
+    try:
+        return _learn_call(embed.match_check, prof.id)
+    finally:
+        _check_lock.release()
+
+
+# --------------------------------------------------------------------------- remote AI (M4)
+#
+# The browser half of `./rag llm`: every route calls rag_studio.remote, the
+# same functions the CLI runs. A credential travels browser -> API, never API
+# -> browser: the engine never returns the token, and _no_secrets strips any
+# key that could hold one anyway.
+
+_SECRET_KEYS = {"token", "authorization", "bearer", "secret", "password"}
+
+
+def _no_secrets(node):
+    if isinstance(node, dict):
+        return {k: _no_secrets(v) for k, v in node.items() if str(k).lower() not in _SECRET_KEYS}
+    if isinstance(node, list):
+        return [_no_secrets(v) for v in node]
+    return node
+
+
+def _llm_snapshot(probe: bool = False) -> dict:
+    return _no_secrets({"connection": remote.connection(), "remote": remote.probe() if probe else None})
+
+
+@app.get("/api/llm/status")
+def get_llm_status(probe: bool = Query(False, description="also ask the runtime for its GPU and models")) -> dict:
+    """The connection, and with probe=true the runtime's GPU, models and where
+    each is loaded (one request through the tunnel)."""
+    return _llm_snapshot(probe and remote.connected())
+
+
+@app.get("/api/llm/colab")
+def get_colab_cell(models: str | None = Query(None, max_length=300)) -> dict:
+    """The setup cell to paste into Colab. Tokenless on purpose: the runtime
+    makes its own token and hands it back inside the connect code, which is
+    pasted into Connect. `./rag llm colab` is the variant with a remembered
+    token; it prints to a terminal, not into an HTTP response."""
+    wanted = models.split() if models else list(colab.DEFAULT_MODELS)
+    try:
+        version = OllamaClient().version()
+    except OllamaUnavailable:
+        version = None
+    try:
+        cell = colab.build_cell(models=wanted, token=None, ollama_version=version)
+    except ValueError as e:
+        _fail(400, str(e))
+    except colab.MissingPayload as e:
+        _fail(500, str(e))
+    return {"cell": cell, "models": wanted, "ollama_version": version,
+            "files": list(colab.PAYLOAD_FILES), "tokenless": True,
+            "cli_equivalent": "./rag llm colab --copy", **colab.cell_stats(cell)}
+
+
+class ConnectRequest(BaseModel):
+    code: str = Field("", max_length=remote.MAX_CODE_CHARS)
+    url: str = Field("", max_length=remote.MAX_URL_CHARS)
+    token: str = Field("", max_length=remote.TOKEN_CHARS[1])
+
+
+@app.post("/api/llm/connect")
+def post_llm_connect(req: ConnectRequest) -> dict:
+    """Connect to a Colab runtime with its connect code (or a URL), then test
+    it with a real request. The same checks, in the same order, as
+    `./rag llm connect`. A failed test still saves the connection."""
+    try:
+        result = remote.connect(code=req.code, url=req.url, token=req.token)
+    except ValueError as e:
+        _fail(400, str(e))
+    return _no_secrets({**result, "connection": remote.connection()})
+
+
+@app.post("/api/llm/test")
+def post_llm_test() -> dict:
+    """A real request: embed one sentence with each model the runtime serves."""
+    result = remote.smoke_test()
+    return _no_secrets({**result, **_llm_snapshot(probe=bool(result["ok"]))})
+
+
+class DisconnectRequest(BaseModel):
+    forget_token: bool = False
+
+
+@app.post("/api/llm/disconnect")
+def post_llm_disconnect(req: DisconnectRequest | None = None) -> dict:
+    """Back to this computer only."""
+    remote.disconnect(forget=bool(req and req.forget_token))
+    return {"ok": True, **_llm_snapshot()}
 
 
 # --------------------------------------------------------------------------- ask
@@ -322,7 +483,8 @@ def post_run(req: RunRequest) -> dict:
         threading.Thread(target=work, name=f"run-{run_id}", daemon=True).start()
         started.wait(timeout=30)
     if failure and not evaluation.run_path(run_id).exists():
-        _fail(409 if "already in progress" in failure[0] else 400, failure[0])
+        busy = "already in progress" in failure[0] or "being built" in failure[0]
+        _fail(409 if busy else 400, failure[0])
     return {"id": run_id}
 
 
@@ -375,6 +537,17 @@ def get_search_lab(q: str = Query(..., min_length=1, max_length=500),
                    cap: int | None = Query(None, ge=1, le=10)) -> dict:
     """Dense, BM25 and hybrid lists for one question, for the search lab."""
     return _learn_call(learn.search_lab, q, _profile(profile).id, k, cap)
+
+
+@app.get("/api/learn/embed")
+def get_embed_lab(profile: str = Query(profiles.DEFAULT, max_length=40),
+                  q: str | None = Query(None, max_length=500),
+                  mix: str | None = Query(None, max_length=40)) -> dict:
+    """An index's passages as points (PCA of their vectors); with a question,
+    where it lands, its nearest passages, Matryoshka cuts, and (with `mix`)
+    the same question embedded by another index's model, searched here."""
+    return _learn_call(learn.embed_lab, _profile(profile).id, (q or "").strip() or None,
+                       _profile(mix).id if mix else None)
 
 
 @app.get("/api/learn/store")

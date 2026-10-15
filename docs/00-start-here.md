@@ -23,6 +23,14 @@ only if the scorecard says it helps.
 ./rag eval --set a b      # the scorecard: answer and score the test questions (about 5 min on qwen3:1.7b)
 ./rag eval --mode retrieval   # recall@5 only, no model: a few seconds
 ./rag eval --search hybrid --cap 2   # search by meaning and by words (RRF), at most 2 passages per section
+./rag index list          # every index profile: its model, where it builds, whether it is built
+./rag index build docling-structure-embeddinggemma2   # EmbeddingGemma 2, in this app (about 17 min)
+./rag index build docling-structure-qwen3-8b --on colab   # on a connected Colab GPU
+./rag index check docling-structure-qwen3-0.6b         # the vector match check (this computer vs Colab)
+./rag index download google/embeddinggemma-2           # the one model fetched from Hugging Face (1.5 GB)
+./rag llm colab --copy    # the Colab setup cell, on the clipboard (docs/02-remote-gpu.md)
+./rag llm connect         # connect to the runtime with the code it showed (reads the clipboard)
+./rag llm status          # the runtime's GPU and models;  ./rag llm test  ·  ./rag llm disconnect
 ./rag health              # the same checks as the System Health page, in the terminal
 ./rag test                # the test suite
 ```
@@ -39,10 +47,10 @@ adds the word index (for BM25) to a build that lacks one, in place.
 |---|---|
 | **Ask** | Ask a question; get a streamed answer with `[n]` citations that open the cited page, outlined |
 | **Documents** | The PDF library and the page inspector: any page beside PyMuPDF's raw and cleaned text and Docling's, every rule's change highlighted, hidden text outlined |
-| **How it works** | One interactive section per RAG step, on your own documents. Interactive now: extract and parse, clean, the chunk playground, the vector store, the search lab (M3); the rest arrive in M4-M7 |
+| **How it works** | One interactive section per RAG step, on your own documents. Interactive now: extract and parse, clean, the chunk playground, the vector store, the search lab (M3), embed (M4); the rest arrive in M5-M7 |
 | **Evaluation** | Test questions, runs with every question's evidence, and the upgrade ladder |
-| **Indexes** | Index profiles: build locally or on Colab, versions, local-vs-Colab vector check (M4) |
-| **Settings** | Which model does each job, Local AI or Remote AI, technique switches |
+| **Indexes** | Every index profile: build on this computer or on the Colab GPU with live progress, the vector match check, the earlier builds |
+| **Settings** | Model backend (Local AI, or Remote AI on a Colab GPU: the setup cell and Connect), which model does each job |
 | **System Health** | Ollama, models per role, loaded models, documents, indexes, memory, disk |
 
 ## Milestones
@@ -53,8 +61,8 @@ adds the word index (for BM25) to a build that lacks one, in place.
 | M1 | Baseline parity: PyMuPDF, NFKC, fixed chunks, nomic, exact search in LanceDB, prompt v2, the scorecard; Ask and Evaluation. Ladder row 1 | **Done** (2026-10-15) |
 | M2 | Docling beside PyMuPDF, the cleaning order, sections, reference tagging, the injection guard; the page inspector. Ladder row 2 | **Done** (2026-10-15) |
 | M3 | Word-boundary chunks, structure-aware chunks with section labels, hybrid search, a per-section cap; How it works 1-3, 6, 7. Ladder rows 3-4 | **Done** (2026-10-15) |
-| M4 | Colab gateway and connect code, index profiles (Qwen3-Embedding 0.6B local, 4B/8B Colab, EmbeddingGemma 2), the Indexes page. Ladder row 5 | Next |
-| M5 | Reranker, contextual retrieval, query rewriting, the agentic loop, chat memory; the Search lab. Ladder rows 6-9 | |
+| M4 | Colab gateway and connect code, index profiles (Qwen3-Embedding 0.6B, EmbeddingGemma 2, Qwen3-Embedding 8B on Colab), the Indexes page, the vector match check, How it works 5. Ladder row 5 | **Done** (2026-10-15) |
+| M5 | Reranker, contextual retrieval, query rewriting, the agentic loop, chat memory; the Search lab. Ladder rows 6-9 | Next |
 | M6 | New answer models (thinking off verified), the judge, RAGAS or DeepEval, tracing. Ladder row 10 | |
 | M7 | Figures: vision descriptions and image embeddings. Ladder row 11 | |
 | M8 | Upload any PDF end to end, polish, full QA, complete docs | |
@@ -63,6 +71,7 @@ adds the word index (for BM25) to a build that lacks one, in place.
 
 - `CLAUDE.md`: the engineering rules and the gotchas, read by Claude Code.
 - `docs/01-architecture.md`: the processes, the engine, the API, the security model.
+- `docs/02-remote-gpu.md`: Remote AI on a Colab GPU: the gateway, the connect code, the vector match check.
 - `docs/steps/`: one doc per RAG step, the baseline as built and its measured numbers.
 - `docs/ladder.md`: the scorecard ladder, one row per upgrade.
 - `docs/research.md`: every technology choice, with sources, dates and what is still unverified.

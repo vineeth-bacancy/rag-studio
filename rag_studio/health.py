@@ -231,9 +231,42 @@ def _index_check(profile_id: str) -> Check:
 
 
 def _remote_checks() -> list[Check]:
-    return [Check("colab", "info", "Remote AI",
-                  "Not connected. Everything runs on this computer.",
-                  technical={"Setup": "Settings > Model backend (arrives in M4)"})]
+    """The Colab runtime, probed live when one is connected (one request
+    through the tunnel per check; the sidebar's status poll never does this)."""
+    from rag_studio import remote
+    conn = remote.connection()
+    if not conn["connected"]:
+        return [Check("colab", "info", "Colab runtime",
+                      "Not connected. Everything runs on this computer.",
+                      fix="./rag llm colab --copy",
+                      technical={"Setup": "Settings > Model backend", "Token remembered":
+                                 "yes" if conn["token_remembered"] else "no"})]
+    info = remote.probe()
+    tech: dict[str, Any] = {"Endpoint": conn["host"], "Connected": conn.get("connected_at") or "-"}
+    if not info["reachable"]:
+        return [Check("colab", "unavailable", "Colab runtime",
+                      f"{info['error']} Re-run the setup cell in Colab and connect again.",
+                      fix="./rag llm connect", technical=tech | {"Error kind": info.get("error_kind")})]
+    gpus = (info.get("gpu") or {}).get("gpus") or []
+    tech |= {"Ollama": info["ollama_version"], "Latency": f"{info['latency_ms']} ms",
+             "GPU": ", ".join(f"{g['name']} ({g['memory_used_mb']:,} / {g['memory_total_mb']:,} MB)" for g in gpus) or "none",
+             "Models": ", ".join(m["name"] for m in info["models"]) or "none"}
+    on_cpu = [m["name"] for m in info["loaded"] if not m["on_gpu"]]
+    if not gpus:
+        return [Check("colab", "warning", "Colab runtime",
+                      "Connected, but the runtime has no GPU, so it is no faster than this computer. "
+                      "In Colab choose a T4 GPU, then run the setup cell again.", technical=tech)]
+    if on_cpu:
+        return [Check("colab", "warning", "Colab runtime",
+                      f"Connected, but {', '.join(on_cpu)} runs on the runtime's CPU. Run the setup cell again.",
+                      technical=tech)]
+    if info["missing"]:
+        return [Check("colab", "warning", "Colab runtime",
+                      f"Connected, but the runtime does not serve {', '.join(info['missing'])}, which the "
+                      "Colab indexes need. Run the setup cell with those models.", technical=tech)]
+    return [Check("colab", "healthy", "Colab runtime",
+                  f"Connected to a {gpus[0]['name']} with {_plural(len(info['models']), 'model')}.",
+                  technical=tech)]
 
 
 def report() -> dict[str, Any]:
@@ -273,7 +306,11 @@ def status() -> dict[str, Any]:
     busy = [m["name"] for m in snap["resident"]
             if not any(same_model(m["name"], o) for o in ours)]
     manifest = store.active_manifest(profiles.DEFAULT)
+    from rag_studio import remote
+    conn = remote.connection()
     return {
+        "remote": {"connected": conn["connected"], "host": conn.get("host"),
+                   "last_error": conn.get("last_error")},
         "ai": {"up": snap["up"], "backend": "local", "answer_model": answer["model"],
                "answer_model_installed": answer["installed"], "busy_with": busy,
                "error": snap["error"]},

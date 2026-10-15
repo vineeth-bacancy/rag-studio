@@ -9,8 +9,8 @@ import { useAsk } from "./ask-store";
 
 /**
  * Which index answers come from, how it is searched, and which prompt version
- * the model gets. Only built indexes can be chosen; the others say how to
- * build them. BM25 and hybrid need the index's word index. The defaults stay
+ * the model gets. Only indexes that can be asked now can be chosen (built,
+ * and for a Colab index, the runtime connected); the others say why. BM25 and hybrid need the index's word index. The defaults stay
  * the baseline until the scorecard says otherwise.
  */
 export function SetupPicker({ disabled }: { disabled?: boolean }) {
@@ -52,12 +52,14 @@ export function SetupPicker({ disabled }: { disabled?: boolean }) {
           </SelectTrigger>
           <SelectContent>
             {(indexes?.profiles ?? []).map((p) => (
-              <SelectItem key={p.id} value={p.id} disabled={!p.active}>
+              <SelectItem key={p.id} value={p.id} disabled={!p.active || p.can?.query.ok === false}>
                 <span className="flex flex-col">
                   <span>{p.label}</span>
-                  {!p.active && (
+                  {/* Built is not enough since M4: a Colab index needs the
+                      runtime connected. The engine says why (indexes.py). */}
+                  {(!p.active || p.can?.query.ok === false) && (
                     <span className="text-[11px] text-muted-foreground">
-                      Not built yet. Run: ./rag ingest --profile {p.id}
+                      {!p.active ? "Not built yet: build it on the Indexes page." : p.can?.query.reason}
                     </span>
                   )}
                 </span>

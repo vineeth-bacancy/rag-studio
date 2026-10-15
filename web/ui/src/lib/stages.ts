@@ -70,6 +70,11 @@ export const STAGES: Stage[] = [
     what: "Turn each passage, and each question, into a vector: a list of numbers that captures meaning.",
     example: "nomic-embed-text expects 'search_document: ' before passages and 'search_query: ' before questions.",
     arrives: "M4",
+    explain: [
+      "An embedding model reads a whole passage and returns one vector: a point in a space of hundreds of dimensions where passages that mean similar things sit close together.",
+      "Each model builds its own space, with its own prefixes in front of questions and passages, so a vector only means something next to vectors made by the same model the same way.",
+      "Below, every passage of an index is a point; ask a question to see where it lands, what survives cutting the vectors shorter, and what happens when two models mix.",
+    ],
   },
   {
     slug: "store",

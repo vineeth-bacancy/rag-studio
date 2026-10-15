@@ -58,6 +58,29 @@ export const api = {
   cancelRun: (id: string) =>
     request<{ id: string; cancelling: boolean }>(`/eval/runs/${id}/cancel`, { method: "POST" }),
 
+  // Indexes (M4)
+  indexes: () => request<IndexesResponse>("/indexes"),
+  buildIndex: (profile: string, on: "local" | "colab", force = false) =>
+    request<{ profile: string; job: BuildJob | null }>(`/indexes/${encodeURIComponent(profile)}/build`, {
+      method: "POST", body: JSON.stringify({ on, force }),
+    }),
+  cancelBuild: (profile: string) =>
+    request<{ profile: string; cancelling: boolean }>(`/indexes/${encodeURIComponent(profile)}/cancel`, { method: "POST" }),
+  /** The vector match check: up to two minutes on this CPU. */
+  matchCheck: (profile: string) =>
+    request<MatchCheck>(`/indexes/${encodeURIComponent(profile)}/check`, { method: "POST" }),
+
+  // Remote AI (M4)
+  llmStatus: (probe = false) => request<LlmSnapshot>(`/llm/status${probe ? "?probe=true" : ""}`),
+  llmColab: () => request<ColabCell>("/llm/colab"),
+  llmConnect: (body: { code?: string; url?: string; token?: string }) =>
+    request<ConnectResult>("/llm/connect", { method: "POST", body: JSON.stringify(body) }),
+  llmTest: () => request<SmokeTest & LlmSnapshot>("/llm/test", { method: "POST" }),
+  llmDisconnect: (forgetToken = false) =>
+    request<{ ok: boolean } & LlmSnapshot>("/llm/disconnect", {
+      method: "POST", body: JSON.stringify({ forget_token: forgetToken }),
+    }),
+
   /**
    * One question, answered as server-sent events. `fetch` + a stream reader
    * rather than `EventSource`, which can only GET: the question needs a body.
@@ -129,6 +152,8 @@ export const api = {
 export type Status = "healthy" | "running" | "warning" | "needs_attention" | "unavailable" | "info";
 
 export interface AppStatus {
+  /** The Colab runtime as saved at connect time; no request crosses the tunnel. */
+  remote?: { connected: boolean; host: string | null; last_error: string | null };
   ai: {
     up: boolean;
     backend: "local" | "remote";
@@ -387,6 +412,92 @@ export function boxesPath(source: Source, profile: string): string {
 // Index profiles and prompts. Mirrors rag_studio/profiles.py and prompt.py.
 // ---------------------------------------------------------------------------
 
+/** Where a profile embeds: this computer, the Colab runtime, or either. */
+export type Where = "local" | "colab" | "either";
+
+/** A yes/no the engine decided, with the reason (and fix) when it is no. */
+export interface Can {
+  ok: boolean;
+  reason: string | null;
+  fix?: string | null;
+}
+
+export interface BuildManifest {
+  table: string;
+  built_at: string;
+  rows: number;
+  config: Record<string, unknown>;
+  documents: unknown[];
+  embedding: {
+    model: string;
+    digest: string;
+    dimensions: number;
+    built_on?: "local" | "colab";
+    backend?: string;
+    ollama_version?: string;
+    gpu?: string | null;
+    quantization?: string | null;
+    revision?: string;
+    [key: string]: unknown;
+  };
+  embedded?: number;
+  reused?: number;
+  from_cache?: number;
+  timings?: Record<string, number>;
+}
+
+/** A build's progress record (rag_studio/ingest.py `_Job`). */
+export interface BuildJob {
+  profile: string;
+  label: string;
+  on: "local" | "colab";
+  status: "running" | "done" | "failed" | "cancelled" | "interrupted";
+  stage: string;
+  started_at: string;
+  finished_at?: string;
+  done: number;
+  total: number | null;
+  passages?: number;
+  reused?: number;
+  cached?: number;
+  error: string | null;
+  up_to_date?: boolean;
+  rows?: number;
+  embedded?: number;
+  seconds?: number;
+}
+
+export interface MatchPair {
+  a: "local" | "colab";
+  b: "local" | "colab" | "stored";
+  what: "passages" | "questions";
+  /** noise: one machine against itself in another order; index: against the stored vectors; cross: the spec's check. */
+  kind: "noise" | "index" | "cross";
+  n: number;
+  min: number;
+  median: number;
+  mean: number;
+}
+
+/** The vector match check (rag_studio/embed.py `match_check`). */
+export interface MatchCheck {
+  profile: string;
+  table: string;
+  model: string;
+  built_on: "local" | "colab";
+  passages: number;
+  questions: number;
+  threshold: number;
+  sides: Record<"local" | "colab", { available: boolean; reason?: string; seconds?: number; ollama_version?: string; gpu?: string | null }>;
+  pairs: MatchPair[];
+  cross_machine: boolean;
+  /** null with one machine: nothing to compare across. */
+  passed: boolean | null;
+  noise_floor: number | null;
+  noise_passages: number;
+  checked_at: string;
+}
+
 export interface IndexProfileRow {
   id: string;
   label: string;
@@ -399,8 +510,25 @@ export interface IndexProfileRow {
   /** Whether the build has a word index, so BM25 and hybrid search can run. */
   word_index: boolean;
   /** The active build's manifest; null until the profile is built. */
-  active: { table: string; built_at: string; rows: number; config: Record<string, unknown>; documents: unknown[] } | null;
+  active: BuildManifest | null;
   builds: number;
+  history?: { table: string; built_at: string; rows: number; built_on: "local" | "colab"; seconds: number | null }[];
+  embedding?: {
+    model: string;
+    name: string;
+    dimensions: number;
+    backend: "ollama" | "sentence-transformers";
+    build_on: Where;
+    query_on: "local" | "colab";
+    doc_prefix: string;
+    query_prefix: string;
+    options: Record<string, unknown> | null;
+    revision: string | null;
+  };
+  can?: { build_local: Can; build_colab: Can; query: Can };
+  build_ram_gb?: number | null;
+  job?: BuildJob | null;
+  check?: MatchCheck | null;
 }
 
 export interface SearchMethodInfo {
@@ -412,6 +540,115 @@ export interface SearchMethodInfo {
 export interface IndexesResponse {
   profiles: IndexProfileRow[];
   search_methods: SearchMethodInfo[];
+  remote?: { connected: boolean; host: string | null; models: string[] | null; connected_at: string | null };
+  free_ram_gb?: number | null;
+  active_build?: BuildJob | null;
+}
+
+/** How it works, step 5 (rag_studio/learn.py `embed_lab`). */
+export interface EmbedHit {
+  rank: number;
+  id: string;
+  doc: string;
+  page: number;
+  score: number;
+  xy: [number, number];
+  text: string;
+}
+
+export interface EmbedLab {
+  profile: string;
+  label: string;
+  model: string;
+  model_name: string;
+  dimensions: number;
+  doc_prefix: string;
+  query_prefix: string;
+  embedded_on: "local" | "remote";
+  rows: number;
+  /** Share of the vectors' variance the two PCA axes keep (0-1). */
+  explained: number;
+  documents: { doc_id: string; title: string }[];
+  points: { id: string; doc: string; page: number; xy: [number, number] }[];
+  question: {
+    text: string;
+    sent: string;
+    embed_ms: number;
+    xy: [number, number];
+    nearest: EmbedHit[];
+    matryoshka: { dimensions: number; ids: string[]; kept: number; bytes: number }[];
+  } | null;
+  mix?:
+    | { profile: string; model_name: string; possible: true; nearest: EmbedHit[]; kept: number }
+    | { profile: string; model_name: string; possible: false; reason: string };
+}
+
+// ---------------------------------------------------------------------------
+// Remote AI (M4). Mirrors rag_studio/remote.py. No field ever holds a token:
+// a credential travels browser -> API, never back.
+// ---------------------------------------------------------------------------
+
+export interface RemoteConnection {
+  connected: boolean;
+  backend: "local" | "remote";
+  token_remembered: boolean;
+  state_path: string;
+  code_prefix: string;
+  needed_models: string[];
+  fallback: "strict";
+  url?: string;
+  host?: string;
+  authenticated?: boolean;
+  models?: string[];
+  gateway?: string | null;
+  connected_at?: string | null;
+  last_ok_at?: string | null;
+  last_error?: string | null;
+  last_error_at?: string | null;
+  last_error_kind?: string | null;
+}
+
+export interface RemoteProbe {
+  reachable: boolean;
+  error: string | null;
+  error_kind: string | null;
+  latency_ms?: number;
+  ollama_version?: string;
+  models?: { name: string; digest: string | null; size: number; quantization: string | null; capabilities: string[] }[];
+  loaded?: { name: string; size: number; size_vram: number; on_gpu: boolean; fully_on_gpu: boolean }[];
+  gpu?: { available: boolean; reason?: string; gpus?: { name: string; memory_total_mb: number; memory_used_mb: number; utilization_pct: number }[] };
+  missing?: string[];
+}
+
+export interface LlmSnapshot {
+  connection: RemoteConnection;
+  remote: RemoteProbe | null;
+}
+
+export interface SmokeTest {
+  ok: boolean;
+  stage: string;
+  error: string | null;
+  error_kind: string | null;
+  seconds: number | null;
+  embedded: { model: string; digest: string | null; dimensions: number; seconds: number }[];
+}
+
+export interface ConnectResult extends SmokeTest {
+  missing: string[];
+  remote: RemoteProbe | null;
+  connection: RemoteConnection;
+}
+
+export interface ColabCell {
+  cell: string;
+  models: string[];
+  ollama_version: string | null;
+  files: string[];
+  tokenless: boolean;
+  cli_equivalent: string;
+  kilobytes: number;
+  lines: number;
 }
 
 export interface PromptVersion {
