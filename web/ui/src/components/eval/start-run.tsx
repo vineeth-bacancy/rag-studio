@@ -7,19 +7,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   api,
   type AnswerModel,
   type GoldenSet,
-  type IndexProfileRow,
+  type IndexesResponse,
   type PromptVersion,
   type RunBrief,
   type RunMode,
+  type SearchMethod,
 } from "@/lib/api";
+import { SEARCH_LABELS, SECTION_CAP } from "@/lib/search";
 
 /**
- * Start a run: which test questions, which index they search, whether the
- * model answers them, which model and which prompt. The time estimate is only
+ * Start a run: which test questions, which index they search and how, whether
+ * the model answers them, which model and which prompt. The time estimate is only
  * shown when a past run with the same model measured it - never guessed.
  */
 export function StartRun({
@@ -34,13 +37,15 @@ export function StartRun({
   onStarted: (id: string) => void;
 }) {
   const { data: models } = useSWR<{ default: string; answer_models: AnswerModel[] }>("/models");
-  const { data: indexes } = useSWR<{ profiles: IndexProfileRow[] }>("/indexes");
+  const { data: indexes } = useSWR<IndexesResponse>("/indexes");
   const { data: prompts } = useSWR<{ default: string; versions: PromptVersion[] }>("/prompts");
   const [chosen, setChosen] = useState<string[]>(["set-a"]);
   const [mode, setMode] = useState<RunMode>("answer");
   const [model, setModel] = useState<string | null>(null);
   const [profile, setProfile] = useState<string>("baseline");
   const [prompt, setPrompt] = useState<string | null>(null);
+  const [search, setSearch] = useState<SearchMethod>("dense");
+  const [capped, setCapped] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const pickedModel = model ?? models?.default ?? null;
@@ -48,6 +53,13 @@ export function StartRun({
   const profileLabels = Object.fromEntries((indexes?.profiles ?? []).map((p) => [p.id, p.label]));
   const unbuilt = (indexes?.profiles ?? []).filter((p) => !p.active);
   const pickedProfile = indexes?.profiles.find((p) => p.id === profile);
+  // Without a word index only dense search can run; the choice falls back
+  // visibly rather than sending a run the API refuses.
+  const wordIndex = pickedProfile?.word_index ?? true;
+  const pickedSearch: SearchMethod = wordIndex ? search : "dense";
+  const methods = indexes?.search_methods ?? (["dense", "bm25", "hybrid"] as SearchMethod[]).map((id) => ({
+    id, label: SEARCH_LABELS[id], explain: "",
+  }));
   const note = models?.answer_models.find((m) => m.name === pickedModel)?.note;
   const scoredCount = sets
     .filter((s) => chosen.includes(s.id) && s.scored)
@@ -71,6 +83,8 @@ export function StartRun({
         mode,
         model: mode === "answer" ? pickedModel : null,
         profile,
+        search: pickedSearch,
+        section_cap: capped ? SECTION_CAP : null,
         ...(mode === "answer" && pickedPrompt ? { prompt: pickedPrompt } : {}),
       });
       toast.success("Run started. Results appear below as each question finishes.");
@@ -173,6 +187,46 @@ export function StartRun({
           ))}
         </div>
 
+        <div className="space-y-1.5">
+          <label htmlFor="run-search" className="text-sm font-medium">
+            Search
+          </label>
+          <Select
+            items={Object.fromEntries(methods.map((m) => [m.id, m.label]))}
+            value={pickedSearch}
+            onValueChange={(v) => v && setSearch(v as SearchMethod)}
+          >
+            <SelectTrigger id="run-search" className="w-full sm:w-72">
+              <SelectValue placeholder="Choose a search method" />
+            </SelectTrigger>
+            <SelectContent>
+              {methods.map((m) => (
+                <SelectItem key={m.id} value={m.id} disabled={m.id !== "dense" && !wordIndex}>
+                  <span className="flex flex-col">
+                    <span>{m.label}</span>
+                    {m.explain && <span className="text-[11px] text-muted-foreground">{m.explain}</span>}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {!wordIndex && pickedProfile?.active && (
+            <p className="text-xs text-muted-foreground">
+              This index has no word index yet, so BM25 and hybrid search are unavailable. Add it with{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono">./rag ingest --profile {pickedProfile.id}</code>
+            </p>
+          )}
+          <label className="flex w-fit cursor-pointer items-center gap-2 pt-1 text-sm">
+            <Switch checked={capped} onCheckedChange={setCapped} />
+            Limit per section
+          </label>
+          <p className="max-w-prose text-xs text-pretty text-muted-foreground">
+            At most {SECTION_CAP} passages from one section ahead of the rest; contents pages and reference lists at
+            most 1. Nothing is dropped: a limited passage moves down the list. Passages with no known section are never
+            limited.
+          </p>
+        </div>
+
         {mode === "answer" && (
           <div className="space-y-1.5">
             <label htmlFor="run-model" className="text-sm font-medium">
@@ -217,6 +271,11 @@ export function StartRun({
               The system prompt is versioned to the byte: one blank line changed two answers. Every run records which
               one it used.
             </p>
+            {pickedPrompt === "v4" && pickedProfile && !pickedProfile.labels && (
+              <p className="text-xs text-muted-foreground">
+                Prompt v4 tells the model each passage starts with its section label, and this index has none.
+              </p>
+            )}
           </div>
         )}
 

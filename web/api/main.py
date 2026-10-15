@@ -15,9 +15,11 @@ from pydantic import BaseModel, Field
 
 import sse
 from guard import RequestGuard, allowed_origins
-from rag_studio import __version__, answer, eval as evaluation, health, library, paths, profiles, store
+from rag_studio import __version__, answer, eval as evaluation, health, learn, library, paths, profiles, store
 from rag_studio.config import MODEL_NOTES, role_model
+from rag_studio.embed import ProfileMismatch
 from rag_studio.llm import OllamaClient, OllamaUnavailable
+from rag_studio.retrieve import IndexMissing, SearchSpec
 from rag_studio.parse import aligned_boxes, file_sha256, passage_boxes, render_page_png
 from rag_studio.prompt import DEFAULT_VERSION, SYSTEM_PROMPTS
 
@@ -163,21 +165,35 @@ def get_cleaning(doc_id: str) -> dict:
 
 @app.get("/api/indexes")
 def get_indexes() -> dict:
-    """Each index profile and its active build's manifest (None until built)."""
-    return {"profiles": [
-        {"id": p.id, "label": p.label, "description": p.description,
-         "active": store.active_manifest(p.id), "builds": len(store.builds(p.id))}
-        for p in profiles.PROFILES.values()
+    """Each index profile and its active build's manifest (None until built).
+    `word_index` says whether BM25 and hybrid search can run on it; `labels`
+    whether its passages carry section labels (prompt v4 expects them)."""
+    out = []
+    for p in profiles.PROFILES.values():
+        active = store.active_manifest(p.id)
+        out.append({"id": p.id, "label": p.label, "description": p.description,
+                    "parser": p.parser, "chunker": p.chunker.method, "labels": p.chunker.labels,
+                    "word_index": bool(active and active.get("word_index")),
+                    "active": active, "builds": len(store.builds(p.id))})
+    return {"profiles": out, "search_methods": [
+        {"id": "dense", "label": "Dense", "explain": "By meaning: the nearest vectors."},
+        {"id": "bm25", "label": "BM25", "explain": "By words: the full-text index."},
+        {"id": "hybrid", "label": "Hybrid", "explain": "Both lists, fused by rank (RRF)."},
     ]}
 
 
 # --------------------------------------------------------------------------- ask
+
+SEARCH_PATTERN = "^(dense|bm25|hybrid)$"
+
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(answer.DEFAULT_K, ge=1, le=20)
     profile: str = Field(profiles.DEFAULT, max_length=40)
     prompt: str = Field(DEFAULT_VERSION, max_length=40)
+    search: str = Field("dense", pattern=SEARCH_PATTERN)
+    section_cap: int | None = Field(None, ge=1, le=10)
 
 
 def _profile(profile_id: str) -> profiles.IndexProfile:
@@ -198,7 +214,8 @@ def post_ask(req: AskRequest):
     """One question, answered as server-sent events (see rag_studio/answer.py
     for the event contract): stage, ready, delta, done or error."""
     return sse.stream(answer.ask(req.question, k=req.k, profile_id=_profile(req.profile).id,
-                                 prompt_version=_prompt(req.prompt)))
+                                 prompt_version=_prompt(req.prompt),
+                                 search=SearchSpec(req.search, req.section_cap)))
 
 
 @app.get("/api/prompts")
@@ -264,6 +281,8 @@ class RunRequest(BaseModel):
     label: str | None = Field(None, max_length=80)
     profile: str = Field(profiles.DEFAULT, max_length=40)
     prompt: str = Field(DEFAULT_VERSION, max_length=40)
+    search: str = Field("dense", pattern=SEARCH_PATTERN)
+    section_cap: int | None = Field(None, ge=1, le=10)
 
 
 # Cancel flags for runs started by this process. A run started from the
@@ -278,7 +297,8 @@ def post_run(req: RunRequest) -> dict:
     itself after every question; poll GET /api/eval/runs/{id} for progress."""
     spec = evaluation.RunSpec(sets=req.sets, mode=req.mode, k=req.k, model=req.model,
                               label=req.label, profile=_profile(req.profile).id,
-                              prompt_version=_prompt(req.prompt))
+                              prompt_version=_prompt(req.prompt),
+                              search={"method": req.search, "section_cap": req.section_cap})
     with _start_lock:
         if evaluation.run_is_active():
             _fail(409, "An evaluation run is already in progress. Wait for it to finish, or cancel it.")
@@ -314,3 +334,65 @@ def cancel_run(run_id: str) -> dict:
     flag.set()
     return {"id": run_id, "cancelling": True}
 
+
+
+# --------------------------------------------------------------------------- how it works (M3)
+
+def _learn_call(fn, *args, **kwargs):
+    """Engine errors as plain HTTP answers: bad input 400, missing things 404,
+    a mismatched index 409, AI down 503."""
+    try:
+        return fn(*args, **kwargs)
+    except (IndexMissing, LookupError, IndexError) as e:
+        _fail(404, str(e.args[0]) if e.args else str(e))
+    except ProfileMismatch as e:
+        _fail(409, str(e))
+    except store.WordIndexMissing as e:
+        _fail(409, str(e))
+    except OllamaUnavailable as e:
+        _fail(503, f"AI unavailable. {e.reason}")
+    except ValueError as e:
+        _fail(400, str(e))
+
+
+@app.get("/api/learn/chunk")
+def get_chunk_lab(doc_id: str = Query(..., max_length=100), page: int = Query(..., ge=1),
+                  parser: str = Query("pymupdf", pattern="^(pymupdf|docling)$"),
+                  method: str = Query("structure", max_length=20),
+                  size: int = Query(1000, ge=learn.SIZE_RANGE[0], le=learn.SIZE_RANGE[1]),
+                  overlap: int = Query(150, ge=0, le=1000),
+                  percentile: float = Query(90.0, ge=50.0, le=99.0)) -> dict:
+    """One cleaned page cut by any chunker, for the chunk playground."""
+    _doc_path(doc_id)
+    return _learn_call(learn.chunk_lab, doc_id, page, parser=parser, method=method, size=size,
+                       overlap=overlap, percentile=percentile)
+
+
+@app.get("/api/learn/search")
+def get_search_lab(q: str = Query(..., min_length=1, max_length=500),
+                   profile: str = Query(profiles.DEFAULT, max_length=40),
+                   k: int = Query(learn.LAB_K, ge=1, le=20),
+                   cap: int | None = Query(None, ge=1, le=10)) -> dict:
+    """Dense, BM25 and hybrid lists for one question, for the search lab."""
+    return _learn_call(learn.search_lab, q, _profile(profile).id, k, cap)
+
+
+@app.get("/api/learn/store")
+def get_store_facts(profile: str = Query(profiles.DEFAULT, max_length=40)) -> dict:
+    """A build's LanceDB table: columns, versions, indexes, size, other builds."""
+    return _learn_call(learn.store_facts, _profile(profile).id)
+
+
+_ann_lock = threading.Lock()
+
+
+@app.post("/api/learn/store/ann-check")
+def post_ann_check(profile: str = Query(profiles.DEFAULT, max_length=40)) -> dict:
+    """Measure approximate (ANN) indexes against exact search on a scratch copy
+    of this build's vectors. Takes a few seconds; one at a time."""
+    if not _ann_lock.acquire(blocking=False):
+        _fail(409, "A measurement is already running. Wait for it to finish.")
+    try:
+        return _learn_call(learn.ann_check, _profile(profile).id)
+    finally:
+        _ann_lock.release()

@@ -15,8 +15,15 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 2b | Docling + cleaning (prompt v2) | **9/9** | **6/6** | **10/11** | 8 · 0 · 3 | 6 · 3 · 5 | M2 ✓ |
 | 2c | PyMuPDF + cleaning, prompt v3 (passages fenced as data) | **9/9** | **6/6** | **10/11** | 9 · 0 · 2 | 8 · 1 · 5 | M2 ✓ |
 | 2d | Baseline index, prompt v3 only | 8/9 | 5/6 | 9/11 | 10 · 0 · 1 | 8 · 1 · 5 | M2 ✓ |
-| 3 | Structure-aware passages with section labels | - | - | - | - | - | M3 |
-| 4 | Hybrid search (dense + BM25) | - | - | - | - | - | M3 |
+| 2e | Docling + cleaning, prompt v3 (measured in M3) | **9/9** | **6/6** | **10/11** | 8 · 0 · 3 | 8 · 3 · 3 | M3 ✓ |
+| 3a | PyMuPDF + structure-aware passages with section labels, prompt v3 | 8/9 | **6/6** | **10/11** | **10 · 0 · 1** | 9 · 0 · 5 | M3 ✓ |
+| 3b | Docling + structure-aware passages with section labels, prompt v3 | 8/9 | **6/6** | **10/11** | **10 · 0 · 1** | **10 · 1 · 3** | M3 ✓ |
+| 3c | PyMuPDF + structure-aware, prompt v4 (rule 4 relaxed) | 8/9 | **6/6** | **10/11** | **10 · 0 · 1** | 9 · 1 · 4 | M3 ✓ |
+| 3d | Docling + structure-aware, prompt v4 | 8/9 | **6/6** | **10/11** | **10 · 0 · 1** | 9 · 1 · 4 | M3 ✓ |
+| 4a | 3c + hybrid search (dense + BM25, RRF) | **9/9** | **6/6** | 9/11 | **11 · 0 · 0** | 7 · 2 · 5 | M3 ✓ |
+| 4b | 3b + hybrid search | 8/9 | **6/6** | **10/11** | 10 · 0 · 1 | 9 · 2 · 3 | M3 ✓ |
+| 4c | 3c + limit per section (dense, 2 per section) | **9/9** | **6/6** | **10/11** | 9 · 0 · 2 | 9 · 1 · 4 | M3 ✓ |
+| 4d | 3b + limit per section (dense, 2 per section) | **9/9** | **6/6** | **10/11** | 9 · 0 · 2 | **10 · 1 · 3** | M3 ✓ |
 | 5 | Qwen3-Embedding 0.6B, then 8B on Colab | - | - | - | - | - | M4 |
 | 6 | Reranking (Qwen3-Reranker) | - | - | - | - | - | M5 |
 | 7 | Contextual retrieval | - | - | - | - | - | M5 |
@@ -24,6 +31,137 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 9 | The agentic loop | - | - | - | - | - | M5 |
 | 10 | A new answer model | - | - | - | - | - | M6 |
 | 11 | Figure paths | - | - | - | - | - | M7 |
+
+## Rows 3 and 4, measured 2026-10-15
+
+Built and measured on **both parsers side by side** (the user's choice for M3).
+Everything not named is row 2's: nomic-embed-text, exact search, top 5,
+qwen3:1.7b, thinking off, temperature 0. Sets A and D are scored; B is
+retrieval only. Prompt v3 sha256 `d9edf1b0…`, v4 `e3359656…`.
+
+| Variant | Run | Index build | Passages | Run time |
+|---|---|---|---|---|
+| 2e Docling + cleaning, v3 | `20261015-081851-1b4e` | `docling-clean__20261015T073413…` | 1,275 | 817 s (shared the CPU with an index build; timings not comparable) |
+| 3a PyMuPDF + structure-aware, v3 | `20261015-083915-c607` | `pymupdf-structure__20261015T083557…` | 1,214 | 676 s |
+| 3b Docling + structure-aware, v3 | `20261015-085032-9b8e` | `docling-structure__20261015T083743…` | 1,473 | 734 s |
+| 3c PyMuPDF + structure-aware, v4 | `20261015-090249-35cc` | as 3a | 1,214 | 672 s |
+| 3d Docling + structure-aware, v4 | `20261015-091402-86d6` | as 3b | 1,473 | 657 s |
+
+**Sets A and D together** (Pass · Refused · Wrong): row 1 **18 · 2 · 5**;
+best of row 2 17 · 1 · 7 (2c); 2e 16 · 3 · 6; **3a 19 · 0 · 6**; **3b 20 · 1 · 4**;
+3c 19 · 1 · 5; 3d 19 · 1 · 5. Row 3b is the first setup to beat the baseline on
+all three counts.
+
+**What row 3 says.**
+
+1. **The M3 target is met: A6 is a Hit and is answered.** "According to the
+   executive summary, what are the main risks…" ranks its answer page at
+   **rank 2** (PyMuPDF) and **rank 1** (Docling), from 45 in row 1 and 5 in
+   row 2. Both answers now say "According to the executive summary, the main
+   risks … include renewed escalation of hostilities …" and are right: the
+   passage they cite starts with `Section: Executive Summary`. In row 2 the
+   same words were a misattribution of Chapter 1.
+2. **Docling's whole-table passages help retrieval, not yet the answer.**
+   D6 (Thailand's 2026 forecast) ranks 4 → **1** on Docling: its table is now
+   a passage of its own, labelled `TABLE 2.2 East Asia and Pacific economy
+   forecasts`. qwen3:1.7b still reads the wrong column ("2.9", the 2024
+   value). On A8, Docling's answer names the right configuration ("iMac (two
+   ports) 256GB … 346 kg CO2e"); PyMuPDF's passes the keywords but says "four
+   ports … 346 kg", which is wrong (four ports is 391 kg). Keyword scoring
+   cannot see that; the judge (M6) will.
+3. **The label's cost: A5 lost its Hit.** "What does Chapter 3 say about
+   sovereign debt…" ranks 1 → **8** (PyMuPDF) and 3 → **7** (Docling). Every
+   passage of Chapter 3 now carries the chapter's title in its label, and the
+   chapter's bibliography (p139-142) is a list of titles about sovereign debt
+   and interest rates: it fills the top 5 (spec §5.3, back again). The answer
+   still passes on its keywords, from the bibliography. The limit per section
+   fixes the retrieval (row 4).
+4. **A wrong label is a wrong fact.** Reading these labels showed that GEP
+   boxes ran past their end (no bookmark marks it): Chapter 3's references
+   were labelled "Box 3.1 The costs of hidden debt > References". Fixed before
+   these runs (`docs/steps/01-parse.md`, "where a GEP box ends").
+5. **Prompt v4 (rule 4 relaxed) is a wash.** v3 → v4 moves one row each way:
+   on PyMuPDF D11's "The document does not mention why…" becomes the exact
+   refusal; on Docling D9 (a retrieval Miss) loses a lucky Pass. v3 already
+   answers A6 correctly once the label is there. Not a reason to switch.
+6. **Still failing:** T2 and D11 refuse in other words ("…is not directly
+   stated in the documents. I could not find this in the documents."), which
+   the strict refusal check counts as an answer (spec §5.7). T4 (MacBook Air)
+   and T5 (2031) are answered from the nearest fact. D9 (Spanish) falls from
+   rank 9 (row 2) to outside the top 50 on both structure indexes; why is not
+   measured yet (the multilingual embedding model, row 5, is the planned fix).
+
+### Row 3's other chunkers (retrieval only)
+
+Two more chunkers were built as profiles and measured in retrieval mode (no
+answer model), against PyMuPDF + cleaning. Ranks are the first answer page,
+searching 50 deep; "-" is outside the top 50.
+
+| Profile (dense) | Passages | Set A | Set B | Set D | A5 | A6 | D6 | D9 |
+|---|---|---|---|---|---|---|---|---|
+| PyMuPDF + cleaning (row 2) | 1,098 | 9/9 | 6/6 | 10/11 | 1 | 5 | 4 | 9 |
+| + word-boundary fix (`pymupdf-snap`) | 1,096 | 8/9 | 6/6 | 10/11 | 1 | 8 | 3 | 11 |
+| + structure-aware (`pymupdf-structure`) | 1,214 | 8/9 | 6/6 | 10/11 | 8 | **2** | 4 | - |
+| + semantic (`pymupdf-semantic`) | 1,308 | 7/9 | 6/6 | 10/11 | 10 | 16 | 3 | 47 |
+
+- **The word-boundary fix alone** removes every mid-word start but moves A6
+  from rank 5 to 8: shifting each start shifts every passage's content. It is
+  hygiene, not a retrieval win; structure-aware passages include it anyway.
+- **Semantic chunking is the weakest**, as Qu et al. 2024 found
+  (`docs/research.md` §10). With one threshold for the whole document (the
+  90th percentile of neighbour distances), GEP p19 gets no cut before "Risks
+  to the outlook…": the risks paragraph shares a 937-character passage with
+  per-capita income, and A6 drops to rank 16. On that page alone the 80th
+  percentile cuts right there (the chunk playground shows both). Building it
+  embeds 8,248 sentences (488 s on this CPU) before the passages.
+
+### Row 4: search changes, on each parser's best row-3 variant
+
+Row 4 changes only how the index is searched: **hybrid** (dense and BM25, 50
+deep each, fused with RRF, K = 60) or **dense with the limit per section** (at
+most 2 passages per section ahead of the rest; contents pages and reference
+lists at most 1). PyMuPDF keeps prompt v4 (3c), Docling prompt v3 (3b).
+
+| Variant | Run | Run time |
+|---|---|---|
+| 4a PyMuPDF + structure, hybrid, v4 | `20261015-092513-fcb5` | 667 s |
+| 4b Docling + structure, hybrid, v3 | `20261015-093623-6539` | 692 s |
+| 4c PyMuPDF + structure, dense + limit per section, v4 | `20261015-094757-1c5f` | 843 s |
+| 4d Docling + structure, dense + limit per section, v3 | `20261015-100205-ae34` | 894 s |
+
+**Sets A and D together:** 4a **18 · 2 · 5**, 4b **19 · 2 · 4**, 4c **18 · 1 · 6**,
+4d **19 · 1 · 5**, against 19 · 1 · 5 (3c) and 20 · 1 · 4 (3b).
+
+**What row 4 says.**
+
+1. **On labelled passages, hybrid search does not help the scorecard.** It
+   helped a lot where passages had no label: on the baseline index "global
+   growth" goes from rank 11 to **rank 2** and A6 from 45 to 9 (retrieval runs,
+   `docs/steps/07-search.md`). Once the label carries the section's words,
+   BM25 mostly adds noise: D6 falls out of PyMuPDF's top 5 (rank 4 → 6), and
+   on the answers 4a fixes T2 but breaks D3 and D7; 4b fixes T2 and turns D9
+   into a refusal but breaks A4. 4a is the first variant to answer all of
+   **Set A** right (11 · 0 · 0), at the price of Set D.
+2. **The limit per section gives the best recall of any row** (A 9/9, B 6/6,
+   D 10/11 on both parsers): A5 goes from rank 8 back to **rank 3**, because
+   Chapter 3's references count as one section capped at one passage. But it
+   costs **A4**: all of South Asia's answer pages (96-98) sit in one section,
+   so the passage that states "6.3 percent" is moved out of the top 5 and the
+   model answers with the "excluding India" figure. A cap is a blunt rule:
+   it helps a question whose answer competes with its own chapter's
+   bibliography, and hurts one whose answer is the third passage of its own
+   section.
+3. **Run times** ranged from 657 to 894 s for the same 31 questions (the
+   spread was not investigated); the search itself takes under 20 ms in every
+   variant, so it is not the search.
+
+**Defaults after M3.** Rule: the scorecard decides. **3b (Docling +
+structure-aware passages, dense, prompt v3) is the only setup that beats row 1
+on every count** (20 · 1 · 4 against 18 · 2 · 5). It is a recommendation, not
+yet the app's default: the difference is 2 rows of 25 on one run each, and
+building it needs Docling's 15-minute conversion. Hybrid search and the limit
+per section stay switches (Ask, Evaluation, `./rag eval --search --cap`), off
+by default.
 
 ## Row 2, measured 2026-10-15
 

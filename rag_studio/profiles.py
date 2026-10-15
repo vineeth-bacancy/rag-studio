@@ -7,8 +7,10 @@ text put in front of passages and questions. Two vectors are comparable only if
 all of these match, so the profile's manifest records every one of them, and a
 query embedded any other way is refused (rule 3 in CLAUDE.md).
 
-Profiles so far: the baseline (ladder row 1) and two M2 parsing profiles
-(ladder row 2), which change only the parser and cleaner. M3-M4 add the rest.
+Profiles so far: the baseline (ladder row 1); two M2 parsing profiles (ladder
+row 2), which change only the parser and cleaner; and the M3 chunkers (ladder
+row 3), which change only how the cleaned text is cut and labelled. M4 adds
+the embedding models.
 """
 from __future__ import annotations
 
@@ -86,7 +88,31 @@ DOCLING_CLEAN = replace(
                 "Baseline passages, embedding and search.",
     parser="docling")
 
-PROFILES: dict[str, IndexProfile] = {p.id: p for p in (BASELINE, PYMUPDF_CLEAN, DOCLING_CLEAN)}
+# Ladder row 3 (M3): one change from a row-2 profile each, the chunker.
+PYMUPDF_SNAP = replace(
+    PYMUPDF_CLEAN, id="pymupdf-snap", label="PyMuPDF + cleaning, word-boundary fix",
+    description="PyMuPDF + cleaning, with the baseline's passages fixed so that none starts "
+                "mid-word. Everything else as PyMuPDF + cleaning.",
+    chunker=chunk.FIXED_SNAP)
+PYMUPDF_STRUCTURE = replace(
+    PYMUPDF_CLEAN, id="pymupdf-structure", label="PyMuPDF + structure-aware passages",
+    description="PyMuPDF + cleaning, cut into whole paragraphs that never cross a section, "
+                "each starting with its section label (document and section).",
+    chunker=chunk.STRUCTURE)
+DOCLING_STRUCTURE = replace(
+    DOCLING_CLEAN, id="docling-structure", label="Docling + structure-aware passages",
+    description="Docling + cleaning, cut into whole paragraphs and whole tables that never cross "
+                "a section, each starting with its section label.",
+    chunker=chunk.STRUCTURE)
+PYMUPDF_SEMANTIC = replace(
+    PYMUPDF_CLEAN, id="pymupdf-semantic", label="PyMuPDF + semantic passages",
+    description="PyMuPDF + cleaning, cut inside each section where neighbouring sentences stop "
+                "being similar (by embedding), each starting with its section label.",
+    chunker=chunk.SEMANTIC)
+
+PROFILES: dict[str, IndexProfile] = {p.id: p for p in (
+    BASELINE, PYMUPDF_CLEAN, DOCLING_CLEAN,
+    PYMUPDF_SNAP, PYMUPDF_STRUCTURE, DOCLING_STRUCTURE, PYMUPDF_SEMANTIC)}
 DEFAULT = BASELINE.id
 
 

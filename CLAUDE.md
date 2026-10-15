@@ -157,3 +157,34 @@ Warning / Needs attention / Unavailable.
   before measuring a cleaning change.
 - `dcg` blocks `shutil.rmtree` and some heredocs with backslashes: use a fresh
   scratch folder and the Edit tool instead.
+
+## Engine gotchas (learned in M3)
+
+- **A profile's recorded config must not change for builds that exist.**
+  `ChunkerSpec.describe()` adds a key only when it differs from the default;
+  a new field on `IndexProfile` itself would make every existing build refuse
+  to open ("built with a different setup").
+- **"Up to date" compares every stored row**, not just counts: manifests carry
+  `rows_sha256` (ids, content hashes, labels, sections, kinds, flags). A
+  manifest without it rebuilds once, every vector reused.
+- **A section label is a fact the model reads.** A wrong section (GEP boxes ran
+  past their end until M3) becomes a wrong attribution in every passage after
+  it. Check labels in the chunk playground before measuring.
+- **Labels blur passages that share them**: every Chapter 3 passage carries
+  the chapter title, so its bibliography outranks its summary (A5). The limit
+  per section fixes that and costs single-section answers (A4). Measure both.
+- `VectorCache` has `__len__`, so an empty one is falsy: never write
+  `cache and cache.embed`.
+- A background `./rag ingest` starves `./rag eval` of Ollama (each question's
+  embedding waits behind a batch). Never run a scorecard beside a build;
+  retrieval-only runs are deterministic, timings are not.
+- `dcg` also blocks heredocs whose text contains `>` or `||` (TypeScript): edit
+  UI files with the Edit tool.
+
+## UI gotchas (learned in M3)
+
+- SWR `keepPreviousData` keeps the last result in `data` while the new key
+  loads or fails: show `error` whenever it is set (not `error && !data`), and
+  draw a result only if it matches the current key's parameters.
+- With the sidebar open, a 1280 px window leaves a content container of about
+  960 px: pick container-query breakpoints (`@4xl` = 56rem) for that, not 64rem.

@@ -1,6 +1,6 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-15 ~13:50 IST, at the end of M2. A new session should read, in
+Updated 2026-10-15 ~16:20 IST, at the end of M3. A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -23,7 +23,57 @@ questions.
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
 
-## M2 status: complete (staged, not committed)
+## M3 status: complete (staged, not committed)
+
+**Engine:** `chunk.py` (word-boundary fix `FIXED_SNAP`; `STRUCTURE`: paragraphs
+and Docling tables packed ≤ 1,000 chars within one section/kind, heading-only
+pieces dropped, fragments < 100 chars joined; `SEMANTIC`: same sections, cut
+above the document's 90th-percentile neighbour distance; the section label
+"Document: …\nSection: …"; playground chunkers recursive/sentence);
+`structure.py` **GEP box sections end** where pages stop printing "BOX n.n";
+`store.py` `label` + `search_text` columns and the **word index** (LanceDB FTS,
+stop words kept, stemming, positions); `retrieve.py` `SearchSpec` (dense | bm25
+| hybrid, our RRF K=60 depth 50, `section_cap`); `ingest.py` hashes label+text,
+`rows_sha256` fingerprint (fixed an "up to date" bug), word index added in
+place to old builds, `VectorCache` for sentence vectors (`embed.py`);
+`prompt.py` v4 (rule 4 relaxed) and labels in the passage block; runs record
+`retrieval`, ladder variants split by it; `learn.py` (chunk lab, search lab,
+store facts, ANN check). Profiles: `pymupdf-snap`, `pymupdf-structure`,
+`docling-structure`, `pymupdf-semantic` (all built).
+**API:** `search`/`section_cap` on ask and runs; `/api/indexes` says
+`word_index`/`labels`; `/api/learn/{chunk,search,store,store/ann-check}`.
+**UI:** How it works steps 1-3, 6, 7 at `/learn/[slug]` (parse, clean, chunk
+playground with semantic curve, store with exact-vs-ANN, search lab with rank
+lines); Ask and Evaluation search pickers, per-list ranks on sources.
+
+| Check | Result |
+|---|---|
+| Tests | `./rag test` **172 passed** (133 at M2) |
+| UI | typecheck and lint clean; QA 40/40 page×width, console clean, 8 findings (7 fixed): `docs/qa/2026-10-15-m3-how-it-works-search.md` |
+| M3 target (A6 a Hit) | rank 45 (row 1) → 5 (row 2) → **2 / 1** (structure, PyMuPDF / Docling), answered with the right attribution |
+
+**Scorecard, Sets A+D (Pass · Refused · Wrong), qwen3:1.7b** (all in `docs/ladder.md`):
+row 1 18 · 2 · 5; 2c 17 · 1 · 7; 2e (Docling v3) 16 · 3 · 6; 3a PyMuPDF+structure v3
+19 · 0 · 6; **3b Docling+structure v3 20 · 1 · 4 (beats row 1 on every count)**;
+3c PyMuPDF+structure v4 19 · 1 · 5; 3d Docling+structure v4 19 · 1 · 5; 4a 3c+hybrid
+18 · 2 · 5 (Set A 11 · 0 · 0); 4b 3b+hybrid 19 · 2 · 4; 4c 3c+limit 18 · 1 · 6; 4d 3b+limit
+19 · 1 · 5 (best recall: A 9/9, B 6/6, D 10/11).
+
+Runs: 2e `20261015-081851-1b4e`; 3a `…083915-c607`; 3b `…085032-9b8e`; 3c
+`…090249-35cc`; 3d `…091402-86d6`; 4a `…092513-fcb5`; 4b `…093623-6539`; 4c
+`…094757-1c5f`; 4d `…100205-ae34`. Retrieval-only runs are labelled
+"M3 retrieval: …" (before the box fix) and "M3 retrieval (boxes fixed): …".
+
+**Decision waiting for the user:** make 3b (Docling + structure-aware, dense,
+prompt v3) the app's default? Recommended, with caveats (2 rows of 25, one run
+each; Docling's 15-min conversion is needed to build it). Defaults are still
+baseline + v2 + dense.
+
+If `data/` is wiped: the M2 commands, then `./rag ingest --profile
+pymupdf-structure` (~7 min), `--profile docling-structure` (~8 min),
+`--profile pymupdf-snap` (~8 min), `--profile pymupdf-semantic` (~15 min).
+
+## M2 status: complete (committed by the user as d0921ee)
 
 **Engine:** `parse.py` (layout reader, glyph names, bookmarks, word-aligned
 passage boxes), `parse_docling.py` (Docling, cached), `guard.py` (hidden text by
@@ -64,7 +114,7 @@ Retrieval up everywhere (A6 rank 45 → 5, B4 rank 11 → 1); answers down
 (A6 misattribution, A8 391 vs 346 kg, D10, D6 table rows). Prompt v3 fixes T2/T3
 on the cleaned index with no regression, but is mixed on the baseline.
 **Defaults unchanged** (baseline + v2): no variant beats row 1 on answers.
-**Recommended base for M3: PyMuPDF + cleaning** (ask the user to confirm).
+**M3 base (user, 2026-10-15): both parsers side by side.** Rows 3-4 are built and measured on `pymupdf-clean` and `docling-clean` alike (I had recommended PyMuPDF only).
 
 Runs: 2a `20261015-064121-03ef`, 2b `20261015-065220-7583`, 2c
 `20261015-070309-a697`, 2d `20261015-071550-c31c`. An interrupted 2a attempt
@@ -77,7 +127,7 @@ Docling + ~7 min embedding), then the row-1 commands below and
 (~11 min each). Row 1: `./rag eval --set a b --ladder 1 --label Baseline` and
 `./rag eval --set d --ladder 1 --label "Baseline: edge cases"`.
 
-## Decisions settled (M1 and M2)
+## Decisions settled (M1-M3)
 
 - **The spec wins over M0 research** where they differed (research.md §0).
 - **No Ollama upgrade**; Ollama stays 0.32.6 (EmbeddingGemma 2 goes through Python).
@@ -86,27 +136,33 @@ Docling + ~7 min embedding), then the row-1 commands below and
 - **Ladder rows can have variants**, grouped by setup.
 - **Prompt v3 is opt-in**; v2 stays the default (scorecard, row 2d).
 - Set D's D3 key widened in M1 (p44 says plain "net income" for the adjusted figure).
+- **M3 base: both parsers side by side** (user, 2026-10-15).
+- **Hybrid search and the limit per section are switches, off by default**
+  (row 4: neither improves the scorecard on labelled passages).
+- **Prompt v4 is opt-in** (row 3: a wash against v3).
 
 ## Not done, on purpose (where it goes)
 
-- GEP box sections run past the box's end (no end in the bookmarks): M3, with
-  structure-aware passages.
 - Docling's letter-spaced fragments and spaced footnote numbers: shown, not repaired.
 - Editable test questions in the UI: M8. Set C (figure question): M7.
-- How it works widgets: M3 onward (steps 1-3, 6, 7 in M3).
+- How it works widgets: steps 4, 5, 8 (M4-M5), 9, 10, 12 (M6), 11, 13 (M7).
+- PyMuPDF tables are still flattened (no `find_tables`): Docling's whole-table
+  passages are what helped D6/A8. An exact-match column for numbers in BM25
+  was not built (research.md §8).
+- Semantic chunking's document-wide threshold (90th percentile) misses the p19
+  cut the page-level 80th finds; not tuned (it is an option, not a default).
 - Scrollbars tested in Chrome only.
 
-## Next: M3 (chunking and hybrid search)
+## Next: M4 (Colab and index profiles)
 
-Spec §17: the word-boundary chunker fix, structure-aware passages with section
-labels (use `CleanPage.sections`/`kinds`/`items`), semantic chunking as an
-option, LanceDB full-text + vector hybrid (our own RRF, research C §3), a
-per-section cap (reference lists and contents pages are tagged, `kind`), How it
-works steps 1-3, 6, 7. Targets: Q6 (A6) becomes a Hit — **it already is (rank 5)
-on the cleaned index**; the M3 bar is that it is answered, not misattributed.
-Ladder rows 3-4, built on the base the user confirms (recommended
-`pymupdf-clean`). Consider row 3's effect on A8/D6 (table rows) and A6
-(section labels let rule 4 of the prompt be relaxed, spec §6).
+Spec §17 M4: the Colab gateway and setup cell (adapt `~/Dev/trading`'s design,
+spec §13), the connect code, settings card and CLI; **Qwen3-Embedding 0.6B
+locally** (`qwen3-embedding:0.6b`, approved pull: check `ollama ps` first) and
+**8B on Colab**; **EmbeddingGemma 2 text** via sentence-transformers (research
+§4); the Indexes page; the local-vs-Colab vector-match check. Done when: remote
+connect and test from the UI; the match check passes; ladder row 5 per profile.
+Row 5 should build on the default the user picks after M3 (3b recommended).
+D9 (Spanish) is the question the multilingual model is expected to fix.
 
 ## Gotchas hit so far
 
@@ -123,6 +179,9 @@ Ladder rows 3-4, built on the base the user confirms (recommended
   `./rag ingest --profile … --force` (vectors are reused by hash).
 - A background job dies with the Claude session: an 11-min run was cut at 25/31
   when a session ended. Check `data/runs/` for `interrupted` and rerun.
+- `./rag ingest` once said "up to date" when only labels changed (fixed with
+  `rows_sha256`). If an index ever looks stale, `--force` (vectors reused).
+- Never run a scorecard beside a build: Ollama serves one at a time.
 - Chrome DevTools MCP: `resize_page` fails on a maximised window; use
   `emulate` with a viewport instead. The app keeps its own theme (next-themes):
   use its toggle, not `colorScheme` emulation.

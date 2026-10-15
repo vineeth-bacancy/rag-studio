@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronRight, Cpu } from "lucide-react";
 import { TechnicalDetails } from "@/components/common/technical-details";
 import type { AskDone, AskReady, TraceStep } from "@/lib/api";
 import { NO_DATA, num } from "@/lib/format";
+import { searchName } from "@/lib/search";
 import { cn } from "@/lib/utils";
 
 /** "1.2 s", "340 ms". */
@@ -53,8 +54,44 @@ function StepRow({ step, index, total }: { step: TraceStep; index: number; total
         </div>
       </div>
       <span className="text-right text-xs text-muted-foreground tabular-nums">{duration(step.ms)}</span>
+      {step.id === "search" && <SearchLists detail={step.detail} />}
     </li>
   );
+}
+
+type ListEntry = { rank: number; chunk_id: string };
+
+/**
+ * The lists a search fused or limited, top first: for hybrid, what dense
+ * search and BM25 each found before RRF merged them. "p19 c2" is page 19's
+ * passage c2 (passages on a page are numbered from c0).
+ */
+function SearchLists({ detail }: { detail: TraceStep["detail"] }) {
+  const lists = detail.lists as unknown as Record<string, ListEntry[]> | undefined;
+  const method = detail.method as string | undefined;
+  const capped = Number(detail.capped ?? 0);
+  if (!lists || (Object.keys(lists).length < 2 && !capped && !detail.section_cap)) return null;
+  return (
+    <div className="col-start-2 col-end-4 space-y-1 pt-1 text-[11px] text-muted-foreground">
+      <p>
+        {searchName(method, detail.section_cap as number | null)}
+        {method === "hybrid" && ` · fused by rank (RRF, k = ${detail.rrf_k ?? 60}) from ${detail.depth ?? 50} per list`}
+        {capped > 0 && ` · ${capped} passage${capped === 1 ? "" : "s"} moved down by the section limit`}
+      </p>
+      {Object.entries(lists).map(([name, hits]) => (
+        <p key={name} className="truncate font-mono" title={hits.map((h) => `${h.rank}. ${h.chunk_id}`).join("\n")}>
+          <span className="font-sans">{name === "bm25" ? "BM25" : "Dense"}:</span>{" "}
+          {hits.slice(0, 5).map((h) => shortId(h.chunk_id)).join(" · ")}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** "wb_gep_2026_06:p19:c2" -> "p19 c2". */
+function shortId(chunkId: string): string {
+  const [, page, c] = chunkId.split(":");
+  return page && c ? `${page} ${c}` : chunkId;
 }
 
 /**
@@ -115,7 +152,12 @@ function ModelLine({ ready, done }: { ready: AskReady; done?: AskDone }) {
         <Cpu className="size-3.5 text-muted-foreground" aria-hidden />
         <span className="font-medium">{ready.model.backend === "local" ? "Local AI" : "Remote AI"}</span>
         <span className="text-muted-foreground">
-          · {ready.model.name} answered · {ready.index.embedding.model} searched {num(ready.index.rows)} passages
+          · {ready.model.name} answered ·{" "}
+          {ready.search?.method === "bm25"
+            ? `BM25 searched ${num(ready.index.rows)} passages by words`
+            : ready.search?.method === "hybrid"
+              ? `${ready.index.embedding.model} and BM25 searched ${num(ready.index.rows)} passages`
+              : `${ready.index.embedding.model} searched ${num(ready.index.rows)} passages`}
         </span>
       </p>
       <TechnicalDetails
@@ -131,6 +173,11 @@ function ModelLine({ ready, done }: { ready: AskReady; done?: AskDone }) {
           "Reading prompt": duration(u?.prompt_ms),
           Writing: `${duration(u?.answer_ms)} · ${speed}`,
           Index: `${ready.index.label} · ${ready.index.table}`,
+          Search: ready.search
+            ? [searchName(ready.search.method, ready.search.section_cap),
+               ready.search.metric && `${ready.search.metric}${ready.search.exact ? ", exact" : ""}`]
+                .filter(Boolean).join(" · ")
+            : "Dense",
           Embedding: `${ready.index.embedding.model} · ${ready.index.embedding.dimensions} dims`,
           "Query prefix": JSON.stringify(ready.index.embedding.query_prefix),
           Endpoint: ready.model.host,

@@ -30,7 +30,7 @@ becomes a default only after it moves our own scorecard (§8 of the spec).
 | Streaming | Our own SSE response (`web/api/sse.py`): `no-cache, no-transform`, `X-Accel-Buffering: no`, a ping every 15 s | FastAPI's `EventSourceResponse` hardcodes `Cache-Control: no-cache` (checked in M1); Next gzips a stream without `no-transform` | M1 ✓ |
 | Parsing | PyMuPDF baseline + **Docling 2.139** as a second parser profile, CPU torch | Layout, tables, headers moved out of the body. Measured in M2 (§7.1): it does fix "Th", not hidden text, and it merges compounds and splits letter-spaced words | M2 ✓ |
 | Injection guard | Hidden text found by **rendering the page with and without its text**; instruction-like phrases flagged; prompt v3 fences passages as data | Paint-order rules alone flagged visible text on iMac p6 and GEP tables (measured) | M2 ✓ |
-| Vector store | **LanceDB 0.40**, exact (flat) search, our own RRF fusion | 7-10 ms exact at 1k rows; built-in hybrid hides the two input lists | M1/M3 |
+| Vector store | **LanceDB 0.40**, exact (flat) search, native full-text index (the word index), our own RRF fusion | 8-10 ms exact at 1.1-1.5k rows; ANN loses recall for nothing at this size (IVF_PQ recall@10 0.79-0.80, measured M3); built-in hybrid hides the two input lists | M1 ✓ / M3 ✓ |
 | Embeddings | nomic (baseline) → **qwen3-embedding:0.6b** (Ollama) → **qwen3-embedding:8b** built on Colab (the spec's ladder row 5) → **EmbeddingGemma 2** (sentence-transformers, not Ollama). qwen3-embedding:4b is an optional extra row | EmbeddingGemma 2's Ollama build cannot run on Linux | M4 |
 | Reranker | **Qwen3-Reranker-0.6B** via sentence-transformers `CrossEncoder` on CPU, **top 20 → top 5** as the spec says, latency measured; top 10 is the measured fallback if 20 is too slow. **4B** fp16 on Colab, then **8B** in 8-bit (fp16 does not fit a T4) | Ollama has no rerank API | M5 |
 | Techniques | Starting positions only: fixed-size and structure-aware chunks, hybrid + rerank. Every technique is a switch, and the scorecard sets the defaults | The evidence for each comes from large models | M3-M5 |
@@ -268,7 +268,8 @@ overlays, heading hierarchy on, the DoclingDocument JSON cached per PDF.
   ranks). It reproduces LanceDB's order (verified) and lets the UI show both
   lists. LanceDB's hybrid stays as a test oracle.
 - FTS settings to start from: simple tokenizer, English stemming, **stop words
-  kept**, positions on. Test an extra exact-match column for numbers in M3.
+  kept**, positions on. (Used as is in M3. The extra exact-match column for
+  numbers was not built or measured in M3; revisit with the search lab in M5.)
 - Rebuild = a new table per build, wait for its indexes, smoke-test, tag, then
   swap an atomically written `active.json` pointer; keep the previous build for
   rollback.
@@ -351,8 +352,8 @@ judge call.
 
 | Technique | Evidence | Status | Default here |
 |---|---|---|---|
-| **Fixed-size vs semantic chunking** | Qu et al. 2024 (arXiv 2410.13070): fixed-size won evidence retrieval on 3 of 5 datasets; semantic helped only on artificially stitched documents; answer quality equal; "embedding quality matters more" | VERIFIED-DOC | Fixed-size (with the word-boundary fix) and **structure-aware** chunks; semantic chunking is an option to measure, plus the GEP p19 teaching case |
-| **Hybrid search** | BEIR (2021): BM25 is a robust zero-shot baseline. Anthropic: adding contextual BM25 to contextual embeddings took failures from -35% to -49% | VERIFIED-DOC | On (M3), fused with our own RRF |
+| **Fixed-size vs semantic chunking** | Qu et al. 2024 (arXiv 2410.13070): fixed-size won evidence retrieval on 3 of 5 datasets; semantic helped only on artificially stitched documents; answer quality equal; "embedding quality matters more" | VERIFIED-DOC; **measured here in M3** | **Structure-aware passages with section labels** won ladder row 3 (Docling: 20 · 1 · 4 on Sets A + D vs the baseline's 18 · 2 · 5; `docs/ladder.md`). Semantic chunking is a profile and the GEP p19 teaching case; its retrieval is in `docs/ladder.md` |
+| **Hybrid search** | BEIR (2021): BM25 is a robust zero-shot baseline. Anthropic: adding contextual BM25 to contextual embeddings took failures from -35% to -49% | VERIFIED-DOC; **measured here in M3** | A switch, **off by default**: on unlabelled passages it fixes "global growth" (rank 11 → 2), on labelled passages it does not improve the scorecard (ladder row 4). Fused with our own RRF, checked against LanceDB's `RRFReranker` |
 | **Reranking** | BEIR: rerankers give the best zero-shot results at high compute cost. Anthropic: reranking took the reduction from -49% to -67% (Cohere reranker, top 150 → 20) | VERIFIED-DOC | Top 10 on CPU (latency, §6), top 30-50 on Colab. The gain from a 0.6B local model must be measured |
 | **Contextual retrieval** | Anthropic, 2024-09-19: 1 − recall@20 went 5.7% → 3.7% (contextual embeddings) → 2.9% (+ contextual BM25) → 1.9% (+ rerank), with Gemini embeddings on codebases, fiction and papers; one LLM call per chunk with the whole document in context | VERIFIED-DOC (vendor's own test) | Opt-in, built in bulk on Colab, cached by content hash. Targets the Q6 "executive summary" miss |
 | **HyDE** | Gao et al. 2022: DL19 nDCG@10 44.5 → 61.3 with text-davinci-003 + unsupervised Contriever; the paper warns weaker generators can hurt | VERIFIED-DOC | Off; a scorecard row |

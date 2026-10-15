@@ -40,7 +40,7 @@ from rag_studio.config import role_model
 from rag_studio.files import read_json, write_json_atomic
 from rag_studio.llm import OllamaClient
 from rag_studio.prompt import DEFAULT_VERSION, prompt_sha256
-from rag_studio.retrieve import Retriever, retriever as active_retriever
+from rag_studio.retrieve import Retriever, SearchSpec, retriever as active_retriever
 
 DEEP_K = 50          # how far down to look for the first answer page
 OUTCOMES = ("PASS", "REFUSED", "WRONG")
@@ -201,6 +201,11 @@ class RunSpec:
     prompt_version: str = DEFAULT_VERSION
     label: str | None = None
     ladder: dict[str, Any] | None = field(default=None)   # {"row": 1, "label": "Baseline"}
+    search: dict[str, Any] = field(default_factory=lambda: {"method": "dense", "section_cap": None})
+
+    @property
+    def search_spec(self) -> SearchSpec:
+        return SearchSpec(**self.search)
 
 
 class RunBusy(RuntimeError):
@@ -253,11 +258,14 @@ def _now() -> str:
 
 
 def _config(spec: RunSpec, r: Retriever, client: OllamaClient) -> dict[str, Any]:
+    search = spec.search_spec
     cfg: dict[str, Any] = {
         "mode": spec.mode, "k": spec.k, "deep_k": DEEP_K, "index": r.index_info(),
-        "retrieval": {"method": "dense", "metric": "cosine", "exact": True},
+        "retrieval": search.describe(),
         "answer": None, "app_version": __version__, "ollama_version": client.version(),
     }
+    if search.method != "dense":
+        cfg["retrieval"]["word_index"] = r.word_index_info()
     if spec.mode == "answer":
         gen = GenerationSpec(model=spec.model or role_model("answer"))
         info = client.model_info(gen.model)
@@ -304,6 +312,9 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
     try:
         client = client or OllamaClient()
         r = active_retriever(spec.profile)
+        if spec.search_spec.method != "dense" and not r.has_word_index():
+            raise RuntimeError(f"The {r.profile.label} index has no word index yet, so BM25 and hybrid "
+                               f"search are unavailable. Add it with ./rag ingest --profile {spec.profile}.")
         questions = [(sid, q) for sid in spec.sets for q in all_sets[sid]["questions"]]
         run = {
             "id": run_id or new_run_id(), "status": "running", "started_at": _now(),
@@ -343,7 +354,8 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
 
 def _one(sid: str, q: dict[str, Any], scored: bool, spec: RunSpec, r: Retriever,
          client: OllamaClient) -> dict[str, Any]:
-    hits, t = r.dense(q["question"], DEEP_K)
+    hits, found = r.search(q["question"], DEEP_K, spec.search_spec)
+    t = found["timings"]
     top = hits[:spec.k]
     where = targets(q)
     res: dict[str, Any] = {
@@ -351,18 +363,21 @@ def _one(sid: str, q: dict[str, Any], scored: bool, spec: RunSpec, r: Retriever,
         "targets": where, "expect": q.get("expect"),
         "expect_labels": ([fact_label(f) for f in q["expect"]] if isinstance(q.get("expect"), list)
                           else q.get("expect")),
-        "hits": [{k: h[k] for k in ("rank", "chunk_id", "doc_id", "page", "score")} for h in top],
+        "hits": [{k: h.get(k) for k in ("rank", "chunk_id", "doc_id", "page", "score", "ranks", "capped")}
+                 for h in top],
         "hit_rank": first_answer_rank(top, where),
         "best_rank": first_answer_rank(hits, where),
         "answer": None, "outcome": None, "found": [], "missing": [], "refused": None,
         "citations": None, "usage": None, "error": None,
-        "timings": {"embed_ms": round(t["embed_ms"], 1), "search_ms": round(t["search_ms"], 1),
+        "timings": {"embed_ms": round(t["embed_ms"], 1) if "embed_ms" in t else None,
+                    "search_ms": round(t.get("search_ms", 0) + t.get("bm25_ms", 0) + t.get("fuse_ms", 0), 1),
                     "generate_ms": None},
     }
     if spec.mode == "answer" and scored:
         done = None
         for event, data in ask(q["question"], k=spec.k, model=spec.model, profile_id=spec.profile,
-                               prompt_version=spec.prompt_version, retriever=r, client=client):
+                               prompt_version=spec.prompt_version, search=spec.search_spec,
+                               retriever=r, client=client):
             if event in ("done", "error"):
                 done = (event, data)
         assert done is not None
@@ -417,8 +432,10 @@ def config_key(cfg: dict[str, Any]) -> tuple:
     """What must match for two runs to sit in one ladder row."""
     index = cfg.get("index") or {}
     answer = cfg.get("answer") or {}
+    retrieval = cfg.get("retrieval") or {}
     return (index.get("table"), (index.get("embedding") or {}).get("digest"), cfg.get("k"),
-            answer.get("model"), answer.get("digest"), answer.get("prompt_sha256"))
+            answer.get("model"), answer.get("digest"), answer.get("prompt_sha256"),
+            retrieval.get("method", "dense"), retrieval.get("section_cap"))
 
 
 def tag_ladder(run_id: str, row: int, label: str | None = None) -> dict[str, Any]:
@@ -461,7 +478,7 @@ def ladder() -> list[dict[str, Any]]:
 
 def variant_key(cfg: dict[str, Any]) -> tuple:
     """A ladder variant is one setup: index profile, embedding, k, answer
-    model and prompt. Rebuilding the same index (a new table) is not a new
+    model, prompt and search method. Rebuilding the same index (a new table) is not a new
     variant, but `mixed` reports it."""
     return (((cfg.get("index") or {}).get("profile")),) + config_key(cfg)[1:]
 
@@ -598,5 +615,6 @@ def _brief(cfg: dict[str, Any]) -> dict[str, Any]:
             "cleaner": (index.get("config") or {}).get("cleaner"),
             "embedding_model": (index.get("embedding") or {}).get("model"),
             "retrieval": (cfg.get("retrieval") or {}).get("method"),
+            "section_cap": (cfg.get("retrieval") or {}).get("section_cap"),
             "answer_model": answer.get("model"), "prompt_version": answer.get("prompt_version")}
 

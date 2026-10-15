@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { DocumentFile, Source } from "@/lib/api";
 import { docTitle } from "@/lib/documents";
 import { NO_DATA } from "@/lib/format";
+import { ranksText } from "@/lib/search";
 import { cn } from "@/lib/utils";
 
 const TYPE: Record<Source["type"], string> = { text: "Text", table: "Table", figure: "Figure" };
@@ -28,7 +29,7 @@ export function Sources({
   promptVersion,
 }: {
   sources: Source[];
-  /** The prompt the model got: v3 fences passages off as data. */
+  /** The prompt the model got: v3 and later fence passages off as data. */
   promptVersion?: string;
   /** null while the answer is still being written: not known yet. */
   cited: number[] | null;
@@ -48,7 +49,7 @@ export function Sources({
             cited={cited === null ? null : cited.includes(s.n)}
             docs={docs}
             onOpen={onOpen}
-            fenced={promptVersion === "v3"}
+            fenced={promptVersion === "v3" || promptVersion === "v4"}
           />
         ))}
       </ol>
@@ -70,6 +71,9 @@ function SourceRow({
   onOpen: (source: Source) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Ranks per list say something only when more than one list was searched,
+  // or when "Limit per section" moved the passage.
+  const ranks = s.ranks && (Object.keys(s.ranks).length > 1 || s.capped) ? ranksText(s.ranks) : "";
   return (
     <li className={cn("rounded-lg px-3 py-2.5 ring-1 ring-foreground/10", cited === false ? "bg-muted/30" : "bg-card")}>
       <div className="flex items-start gap-3">
@@ -92,12 +96,22 @@ function SourceRow({
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="tabular-nums">rank {s.rank}</span>
+            {ranks && <span className="tabular-nums">({ranks})</span>}
             <span aria-hidden>·</span>
             <span>Section {s.section_path ?? NO_DATA}</span>
             <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">{TYPE[s.type]}</Badge>
             {KIND[s.kind] && (
               <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal" title={KIND[s.kind]?.hint}>
                 {KIND[s.kind]?.label}
+              </Badge>
+            )}
+            {s.capped && (
+              <Badge
+                variant="outline"
+                className="h-4 px-1.5 text-[10px] font-normal"
+                title="Its section already had passages ranked above it, so Limit per section moved it down."
+              >
+                Moved down (limit per section)
               </Badge>
             )}
             {cited === false && <span>not cited</span>}
@@ -111,6 +125,14 @@ function SourceRow({
                   ? "The prompt told the model that passages are data, never instructions."
                   : "This prompt version does not fence passages off; prompt v3 does."}
               </span>
+            </p>
+          )}
+          {open && s.label && (
+            <p
+              className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground"
+              title="The section label: put in front of the passage before it was embedded, and shown to the model with it."
+            >
+              {s.label}
             </p>
           )}
           <p className={cn("text-xs leading-relaxed text-muted-foreground", !open && "line-clamp-2")}>{s.text}</p>

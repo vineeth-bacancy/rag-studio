@@ -6,6 +6,9 @@
  * `example` is a real case from these three PDFs, measured in the hand-built
  * project (FINDINGS.md, LEARNING_LOG.md), so every step starts from something
  * that actually went wrong or right here.
+ *
+ * A step with `explain` has its interactive page at /learn/<slug>: what the
+ * step is, why it matters, and what to try (the three-sentence rule).
  */
 export interface Stage {
   slug: string;
@@ -13,6 +16,8 @@ export interface Stage {
   what: string;
   example: string;
   arrives: string;
+  /** The step's page: three sentences above its widget. Steps without one are not interactive yet. */
+  explain?: [string, string, string];
 }
 
 export const STAGES: Stage[] = [
@@ -22,6 +27,11 @@ export const STAGES: Stage[] = [
     what: "Read the text, tables and layout out of every PDF page.",
     example: "One GPO page hides its footer under a full-page fill. You can't see it, but a plain extractor reads it anyway.",
     arrives: "M3",
+    explain: [
+      "A PDF stores glyphs at positions, not paragraphs: a parser has to rebuild the text, its reading order and its tables.",
+      "What it gets wrong reaches every later step: a flattened table, a hidden footer, a page number that is not the one printed.",
+      "Pick a page below to compare PyMuPDF's raw text with Docling's, and see what the page hides.",
+    ],
   },
   {
     slug: "clean",
@@ -29,6 +39,11 @@ export const STAGES: Stage[] = [
     what: "Repair what extraction broke, in a fixed order, keeping the raw text beside the clean text.",
     example: "The GEP report's font drops the 'h' in 'Th': 'The' reads 'Te', and 15 such words appear 325 times.",
     arrives: "M3",
+    explain: [
+      "Cleaning repairs what extraction broke, one rule at a time and always in the same order, keeping the raw text beside the clean one.",
+      "A broken word cannot match a question: 'Te economy' is never found by 'the economy', and a header on every page boosts the wrong passages.",
+      "Pick a document and a rule to see every page it changed, and exactly what it changed.",
+    ],
   },
   {
     slug: "chunk",
@@ -36,6 +51,11 @@ export const STAGES: Stage[] = [
     what: "Cut each document into passages small enough to search and to quote.",
     example: "The fixed-size chunker started passages mid-word: 'n the upside...'.",
     arrives: "M3",
+    explain: [
+      "Chunking cuts each page into passages: the pieces that are searched, ranked and shown to the model.",
+      "Where the cuts fall decides what a passage can answer: cut a paragraph in half and neither half states the fact, cut across sections and the passage mixes two topics.",
+      "Try each chunker on the same page, change the size and overlap, and watch the boundaries move.",
+    ],
   },
   {
     slug: "context",
@@ -57,6 +77,11 @@ export const STAGES: Stage[] = [
     what: "Keep the vectors and a word index in LanceDB, so the closest passages are found quickly.",
     example: "At about 1,200 passages, comparing a question with every vector is fast enough that no shortcut is needed.",
     arrives: "M3",
+    explain: [
+      "LanceDB keeps each index as a table on disk: one row per passage, with its text, its page, its section and its vector, plus a word index for BM25.",
+      "An approximate (ANN) index answers faster on millions of rows by not comparing every vector, and pays for it in recall.",
+      "Look inside an index below, and measure what an approximate index would lose on your own passages.",
+    ],
   },
   {
     slug: "search",
@@ -64,6 +89,11 @@ export const STAGES: Stage[] = [
     what: "Find passages by meaning (dense), by words (BM25), or both (hybrid), then rerank the best ones.",
     example: "'Global growth forecast for 2026' found U.S. and euro-area growth first: right topic, wrong subject.",
     arrives: "M3",
+    explain: [
+      "Dense search finds passages by meaning, BM25 finds them by the words they share with the question, and hybrid search merges both lists by rank (RRF).",
+      "They fail differently: dense search matches the topic but can miss the subject, BM25 matches the exact words but not their meaning.",
+      "Ask a question below and follow each passage from list to list.",
+    ],
   },
   {
     slug: "rewrite",

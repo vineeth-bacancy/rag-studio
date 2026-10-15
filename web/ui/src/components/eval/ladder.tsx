@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { Outcome } from "@/lib/api";
 import { NO_DATA } from "@/lib/format";
+import { searchName } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { OUTCOME, recallText } from "./badges";
 
@@ -19,6 +20,7 @@ export interface LadderVariant {
     answer_model: string | null;
     embedding_model: string;
     retrieval: string;
+    section_cap?: number | null;
     index_label?: string | null;
     prompt_version?: string | null;
   } | null;
@@ -129,6 +131,7 @@ function VariantRow({ row, variant: v, first, last }: { row: LadderRow; variant:
         {many && <p className={cn("text-sm", first && "mt-1")}>{v.label}</p>}
         <p className="text-[11px] text-muted-foreground">
           {v.config?.index_label ? `${v.config.index_label} index · ` : ""}
+          {v.config ? `${searchName(v.config.retrieval, v.config.section_cap)} · ` : ""}
           {v.config?.answer_model ?? NO_DATA}
           {v.config?.prompt_version ? ` · prompt ${v.config.prompt_version}` : ""} · {v.config?.embedding_model ?? NO_DATA} · run{" "}
           {v.runs.map((x, i) => (

@@ -20,6 +20,16 @@ Two kinds of page content are **tagged**, not removed:
   for "What does Chapter 3 say about sovereign debt?" (spec §5.3).
 
 M2 records these; M3 uses them (section labels, a per-section cap).
+
+**Where a box ends (M3).** GEP bookmarks where each box starts ("Box 3.1 The
+costs of hidden debt" → p116) but not where it ends, so every page after a box
+used to stay inside it until the next bookmark: Chapter 3's own references
+read "Box 3.1 > References". Every page of a GEP box prints the box's number in
+capitals ("BOX 3.1 The costs of hidden debt (continued)"), and the chapter's
+pages never do (they cite "Box 3.1"). So a box ends at the first page that does
+not name it, and the section returns to the chapter heading that was current
+when the box began. Once passages carry section labels (M3), a wrong section
+is a wrong fact in every passage after the box.
 """
 from __future__ import annotations
 
@@ -39,6 +49,7 @@ _REFERENCES = re.compile(r"^(?:references|bibliography|works cited|reference lis
 _CHILD = re.compile(r"(?:^|[\r\n])\s*--\s*")
 _NUMBERED = re.compile(r"^(?:Box|Table|Figure|Annex)\s+(\d+)\.\d", re.I)
 _CHAPTER = re.compile(r"^(?:Ch\.|Chapter)\s*(\d+)\b", re.I)
+_BOX = re.compile(r"^Box\s+(\d+\.\d+)\b", re.I)
 
 
 def body_size(pages: list[list["Line"]]) -> float:
@@ -138,12 +149,18 @@ def assign_sections(pages: list["CleanPage"], entries: list[dict[str, Any]]) -> 
     refs = False
     ref_size = 0.0
     e = 0
+    box: tuple[str, list[str], str | None] | None = None   # marker, parent path, heading before it
     for page in pages:
         started = False
         while e < len(entries) and entries[e]["page"] <= page.page:
-            path = entries[e]["path"]
+            new = entries[e]["path"]
+            m = _BOX.match(new[-1]) if new else None
+            box = (f"BOX {m.group(1)}", new[:-1], heading if path == new[:-1] else None) if m else None
+            path = new
             heading, refs, started = None, False, True
             e += 1
+        if box and not started and box[0] not in page.text and box[0] not in page.text_raw:
+            path, heading, box = box[1], box[2], None
         toc = page.kinds and page.kinds[0]["kind"] == "toc"
 
         def current() -> list[str]:

@@ -44,9 +44,12 @@ carry none (ports, file paths, Python names) move one layer down.
 | Search by meaning | **dense search** ("by meaning") | cosine similarity | semantic search (ambiguous), vector search |
 | Search by words | **BM25** ("by words") | full-text index | keyword search |
 | Both, fused | **hybrid search** | RRF (reciprocal rank fusion) | combined search |
+| The full-text index BM25 searches | **word index** | full-text index (FTS), LanceDB's native inverted index | keyword index, text index |
+| Moving extra passages of one section behind the others | **limit per section** | section cap | dedupe, diversity filter |
 | Re-scoring the top results with a slower model | **reranking** | cross-encoder | re-sorting |
 | A model's sentence placing a passage in its document | **context line** | contextual retrieval | summary, header |
 | A passage's section ("Ch. 1 > Box 1.1") | **section** | section path | breadcrumb, heading path |
+| The document and section written in front of a passage before it is embedded, indexed and shown to the model | **section label** | contextual header (spec §5.2) | header, breadcrumb; not a context line (M5's model-written sentence) |
 | The questions with verified answers | **test questions** | golden set | benchmark, dataset |
 | One full scoring of a setup | **run** | evaluation run | experiment, job |
 | The table of outcomes | **scorecard** | | results matrix |

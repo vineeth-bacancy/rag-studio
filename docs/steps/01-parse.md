@@ -108,7 +108,30 @@ white-on-white "Column1" left from a spreadsheet), p200 (one off-page letter).
 - **Docling:** each layout item knows its box and where its text sits in the
   page text, so the outline is the boxes of the items the passage covers.
 
-## Next
+## M3: where a GEP box ends
 
-M3 uses the structure found here: section labels on passages, and a cap per
-section so a reference list cannot fill the top 5.
+GEP bookmarks where each box starts (`Box 3.1 The costs of hidden debt` →
+p116) but not where it ends, so until M3 every page after a box stayed inside it
+until the next bookmark: Chapter 3's own references (p139-142) read
+"Box 3.1 > References", and Chapter 1's second half read "Box 1.2 > …". Once
+passages carry section labels (step 3), a wrong section is a wrong fact in
+every passage it covers.
+
+Every page of a GEP box prints the box's number in capitals ("BOX 3.1 The costs
+of hidden debt (continued)"), sometimes mid-page in reading order; the
+chapter's own pages only cite it in title case ("see Box 3.1"). So
+`structure.assign_sections` ends a box at the first page that does not name it,
+and the section returns to the chapter heading that was current when the box
+began. Measured, the same on both parsers:
+
+| Box | Pages before M3 | Pages now |
+|---|---|---|
+| 1.1 How much will AI affect global growth? | 30-43 | **30-35** |
+| 1.2 Unlocking private investment | 44-68 | **44-50** |
+| 2.1 Low-income countries | 76-80 | 76-80 |
+| 3.1 The costs of hidden debt | 116-142 | **116-119** |
+
+`tests/test_chunk.py` pins Box 3.1's end and Chapter 3's references.
+
+Next: M3 uses this structure for section labels on passages and for the limit
+per section, so a reference list cannot fill the top 5 (steps 3 and 7).

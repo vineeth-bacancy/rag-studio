@@ -65,7 +65,35 @@ A6 and D11 from refusals into wrong answers (18 · 2 · 5 → 18 · 1 · 6). Not
 default yet. Both are offered on the Ask page and for runs; every answer
 and run records which one it used. See `13-safety.md`.
 
+## Section labels in the prompt (M3)
+
+A passage from a labelled index (structure-aware or semantic, step 3) shows
+its section label between its number and its text, exactly as it was
+embedded:
+
+```
+[1] wb_gep_2026_06:p19:c2
+Document: Global Economic Prospects -- June 2026
+Section: Executive Summary
+Risks to the outlook remain skewed to the downside. ...
+```
+
+Passages from unlabelled indexes (baseline, row 2) show no label, so their
+prompts are byte-identical to before and their runs stay comparable.
+
+## v4: rule 4 relaxed (M3)
+
+Spec §6: once passages carry section labels, the model *can* see the section,
+so rule 4 ("Never say which section… You cannot see that") is no longer true.
+v4 is v3 with only rule 4 replaced (tested: one line differs):
+
+```
+4. Each passage starts with its document and section. Name a section, chapter, or summary only if that passage's Section line names it.
+```
+
+v4 assumes labelled passages; the Ask page says so when v4 is picked on an
+index without them. Measured in `docs/ladder.md`, row 3.
+
 ## Next (M6)
 
-Relax rule 4 once passages carry section labels the model can see; How it
-works step 9 shows the exact messages and the budget bar.
+How it works step 9 shows the exact messages and the budget bar.

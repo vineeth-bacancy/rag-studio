@@ -15,12 +15,14 @@ import { PagePreview } from "@/components/ask/page-preview";
 import { SetupPicker } from "@/components/ask/setup-picker";
 import { Sources } from "@/components/ask/sources";
 import { WhatHappened, duration } from "@/components/ask/trace";
-import { ApiError, type AppStatus, type DocumentFile, type GoldenSet, type IndexProfileRow, type Source } from "@/lib/api";
+import { ApiError, type AppStatus, type DocumentFile, type GoldenSet, type IndexesResponse, type Source } from "@/lib/api";
 import { num } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** The API's limit, mirrored only to show it. The server applies it. */
 const QUESTION_LIMIT = 2000;
+
+const SEARCHED_BY = { dense: "by meaning", bm25: "by words (BM25)", hybrid: "by meaning and by words (hybrid)" } as const;
 
 export default function AskPage() {
   const { data: status } = useSWR<AppStatus>("/status", { refreshInterval: 30_000 });
@@ -52,8 +54,9 @@ export default function AskPage() {
   }
 
   // The intro describes the index answers will come from: the chosen one.
-  const { data: indexes } = useSWR<{ profiles: IndexProfileRow[] }>("/indexes");
+  const { data: indexes } = useSWR<IndexesResponse>("/indexes");
   const profile = useAsk((s) => s.profile);
+  const search = useAsk((s) => s.search);
   const chosen = indexes?.profiles.find((p) => p.id === profile);
   const examples = golden?.sets.find((s) => s.id === "set-a")?.questions.filter((q) => q.id.startsWith("A")).slice(0, 4) ?? [];
   const noIndex = status && !status.indexed;
@@ -91,7 +94,7 @@ export default function AskPage() {
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">
                   {status && chosen?.active
-                    ? `Answers come only from your ${num(status.documents)} reports: ${num(chosen.active.rows)} passages in the ${chosen.label} index, searched by meaning. Each fact is cited, and a citation opens the page it came from.`
+                    ? `Answers come only from your ${num(status.documents)} reports: ${num(chosen.active.rows)} passages in the ${chosen.label} index, searched ${SEARCHED_BY[search]}. Each fact is cited, and a citation opens the page it came from.`
                     : "Answers come only from your reports. Each fact is cited, and a citation opens the page it came from."}
                 </p>
                 {examples.length > 0 && (

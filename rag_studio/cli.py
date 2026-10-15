@@ -51,6 +51,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             print(f"  Docling converted {info['pages']} pages ({info['seconds']:.0f} s)", flush=True)
         elif stage == "parse":
             print(f"Parsed {info['documents']} documents, {info['pages']} pages ({info['seconds']:.1f} s)")
+        elif stage == "sentences":
+            print(f"Semantic chunking: {info['sentences']} sentences to compare"
+                  f" ({info['cached']} already embedded)", flush=True)
         elif stage == "chunk":
             print(f"Cut {info['passages']} passages ({info['seconds']:.1f} s)")
         elif stage == "embed_start":
@@ -61,6 +64,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             if pct // 10 != last["pct"] // 10 or info["done"] == info["total"]:
                 print(f"  {info['done']}/{info['total']}", flush=True)
                 last["pct"] = pct
+        elif stage == "word_index":
+            print(f"Word index (BM25) on {info['column']} ({info['seconds']:.1f} s)")
         elif stage == "up_to_date":
             print(f"The index is up to date ({info['table']}). Nothing to do.")
         elif stage == "done":
@@ -107,7 +112,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
     chosen = [f"set-{s}" if not s.startswith("set-") else s for s in args.set] or list(sets)
     ladder = {"row": args.ladder, "label": args.label or f"Row {args.ladder}"} if args.ladder else None
     spec = ev.RunSpec(sets=chosen, mode=args.mode, k=args.k, model=args.model,
-                      profile=args.profile, prompt_version=args.prompt, label=args.label, ladder=ladder)
+                      profile=args.profile, prompt_version=args.prompt, label=args.label, ladder=ladder,
+                      search={"method": args.search, "section_cap": args.cap})
 
     def on_result(run: dict, res: dict) -> None:
         done, total = run["progress"]["done"], run["progress"]["total"]
@@ -121,8 +127,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if res["error"]:
             print(f"        error: {res['error']}")
 
-    print(f"Run: {', '.join(chosen)} · {args.profile} · {args.mode} · top {args.k} · prompt {args.prompt}"
-          + (f" · {args.model}" if args.model else ""))
+    print(f"Run: {', '.join(chosen)} · {args.profile} · {spec.search_spec.label} · {args.mode} · top {args.k}"
+          f" · prompt {args.prompt}" + (f" · {args.model}" if args.model else ""))
     try:
         run = ev.execute(spec, on_result=on_result)
     except Exception as e:  # noqa: BLE001
@@ -164,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prompt", default="v2", help="system prompt version (default: %(default)s)")
     p.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES),
                    help="which index to search (default: %(default)s)")
+    p.add_argument("--search", choices=("dense", "bm25", "hybrid"), default="dense",
+                   help="dense (by meaning), bm25 (by words) or hybrid (both, fused with RRF) (default: %(default)s)")
+    p.add_argument("--cap", type=int, metavar="N",
+                   help="at most N passages per section ahead of the rest; contents pages and "
+                        "reference lists at most 1 (default: no cap)")
     p.add_argument("--label", help="a name for this run (with --ladder: the row's variant name)")
     p.add_argument("--ladder", type=int, metavar="ROW", help="record this run as a ladder row")
     p.add_argument("--tag", metavar="RUN_ID", help="with --ladder: record a finished run as a ladder row")

@@ -12,6 +12,7 @@ import { duration } from "@/components/ask/trace";
 import { api, type DocumentFile, type Run, type RunResult } from "@/lib/api";
 import { docTitle } from "@/lib/documents";
 import { NO_DATA, dateTimeLabel, num } from "@/lib/format";
+import { ranksText, searchName } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { HitLabel, OutcomeBadge, RunStatusBadge, recallText } from "./badges";
 
@@ -49,7 +50,7 @@ export function RunDetail({
         <CardTitle as="h2">{run.label ?? Object.values(run.sets).map((x) => x.name).join(", ")}</CardTitle>
         <CardDescription>
           {dateTimeLabel(run.started_at)} · {run.spec.mode === "answer" ? `answers by ${cfg.answer?.model}` : "retrieval only"} · top{" "}
-          {cfg.k} passages · {cfg.index.label} index
+          {cfg.k} passages · {cfg.index.label} index · {searchName(cfg.retrieval?.method, cfg.retrieval?.section_cap)}
           {cfg.answer ? ` · prompt ${cfg.answer.prompt_version}` : ""}
           {run.seconds !== null ? ` · ${duration(run.seconds * 1000)}` : ""}
           {s?.scored ? ` · ${s.scored} answers scored` : ""}
@@ -132,7 +133,17 @@ export function RunDetail({
             Cleaner: typeof cfg.index.config.cleaner === "string" ? cfg.index.config.cleaner : NO_DATA,
             Embedding: `${cfg.index.embedding.model} · ${cfg.index.embedding.dimensions} dims · ${cfg.index.embedding.quantization ?? NO_DATA}`,
             "Embedding digest": cfg.index.embedding.digest.slice(0, 19),
-            Search: `${cfg.retrieval.method}, ${cfg.retrieval.metric}, ${cfg.retrieval.exact ? "exact" : "approximate"}, top ${cfg.k}`,
+            Search: [
+              searchName(cfg.retrieval.method, cfg.retrieval.section_cap),
+              cfg.retrieval.metric && `${cfg.retrieval.metric}, ${cfg.retrieval.exact ? "exact" : "approximate"}`,
+              cfg.retrieval.fusion && `${cfg.retrieval.fusion.toUpperCase()} k = ${cfg.retrieval.rrf_k}, ${cfg.retrieval.depth} per list`,
+              `top ${cfg.k}`,
+            ].filter(Boolean).join(" · "),
+            "Word index": cfg.retrieval.word_index
+              ? `${cfg.retrieval.word_index.column} · ${Object.entries(cfg.retrieval.word_index.settings ?? {})
+                  .map(([k, v]) => `${k} ${String(v)}`)
+                  .join(", ")}`
+              : NO_DATA,
             "Answer model": cfg.answer ? `${cfg.answer.model} · ${cfg.answer.parameter_size ?? NO_DATA} · ${cfg.answer.quantization ?? NO_DATA}` : NO_DATA,
             "Model digest": cfg.answer?.digest?.slice(0, 19) ?? NO_DATA,
             Options: cfg.answer ? `thinking ${cfg.answer.think ? "on" : "off"}, temperature ${cfg.answer.temperature}, num_ctx ${cfg.answer.num_ctx}` : NO_DATA,
@@ -247,6 +258,7 @@ function ResultPanel({ r, facts, docs }: { r: RunResult; facts: string[] | null;
                 <li
                   key={h.chunk_id}
                   className="grid grid-cols-[1.25rem_minmax(0,1fr)_auto_2.75rem] items-center gap-x-2 py-1.5 tabular-nums"
+                  title={[ranksText(h.ranks), h.capped && "moved down by the section limit"].filter(Boolean).join(" · ") || undefined}
                 >
                   <span className="text-muted-foreground">{h.rank}</span>
                   <span className={cn("truncate", hit)} title={docTitle(h.doc_id, docs)}>

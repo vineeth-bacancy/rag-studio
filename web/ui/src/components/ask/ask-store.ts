@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-import { ApiError, api, type AskDone, type AskError, type AskReady, type TraceStep } from "@/lib/api";
+import { ApiError, api, type AskDone, type AskError, type AskReady, type SearchMethod, type TraceStep } from "@/lib/api";
 
 /**
  * The questions asked on this page, kept while you move between pages.
@@ -27,12 +27,18 @@ export interface Exchange {
 interface AskState {
   exchanges: Exchange[];
   busy: boolean;
-  /** Which index to search and which prompt version to answer with. Each
-   * answer records what it actually used (ready.index, ready.prompt). */
+  /** Which index to search, how, and which prompt version to answer with.
+   * Each answer records what it actually used (ready.index, ready.search,
+   * ready.prompt). */
   profile: string;
   prompt: string;
+  search: SearchMethod;
+  /** "Limit per section": at most this many passages per section ahead of the rest; null is off. */
+  sectionCap: number | null;
   setProfile: (profile: string) => void;
   setPrompt: (prompt: string) => void;
+  setSearch: (search: SearchMethod) => void;
+  setSectionCap: (cap: number | null) => void;
   send: (question: string) => Promise<void>;
   stop: () => void;
   clear: () => void;
@@ -51,8 +57,12 @@ export const useAsk = create<AskState>((set, get) => {
     busy: false,
     profile: "baseline",
     prompt: "v2",
+    search: "dense",
+    sectionCap: null,
     setProfile: (profile) => set({ profile }),
     setPrompt: (prompt) => set({ prompt }),
+    setSearch: (search) => set({ search }),
+    setSectionCap: (sectionCap) => set({ sectionCap }),
 
     async send(question) {
       const text = question.trim();
@@ -67,7 +77,13 @@ export const useAsk = create<AskState>((set, get) => {
       });
       try {
         await api.askStream(
-          { question: text, profile: get().profile, prompt: get().prompt },
+          {
+            question: text,
+            profile: get().profile,
+            prompt: get().prompt,
+            search: get().search,
+            section_cap: get().sectionCap,
+          },
           (event) => {
             switch (event.event) {
               case "stage":

@@ -29,7 +29,7 @@ from rag_studio.config import OLLAMA_URL, role_model
 from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
 from rag_studio.prompt import (DEFAULT_VERSION, REFUSAL, build_messages, estimate_tokens,
                                looks_truncated, prompt_chars, prompt_sha256)
-from rag_studio.retrieve import Retriever, retriever as active_retriever
+from rag_studio.retrieve import DENSE, Retriever, SearchSpec, retriever as active_retriever
 from rag_studio.trace import Trace
 
 Event = tuple[str, dict[str, Any]]
@@ -83,15 +83,21 @@ def citations(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
 def _source(hit: dict[str, Any], n: int) -> dict[str, Any]:
     return {"n": n, "rank": hit["rank"], "chunk_id": hit["chunk_id"], "doc_id": hit["doc_id"],
             "page": hit["page"], "page_label": hit.get("page_label"),
-            "section_path": hit.get("section_path"), "type": hit["type"],
+            "section_path": hit.get("section_path"), "label": hit.get("label"), "type": hit["type"],
             "kind": hit.get("kind") or "body", "score": round(hit["score"], 4), "text": hit["text"],
             "char_start": hit["char_start"], "char_end": hit["char_end"],
+            # Where it ranked in each list before fusion (hybrid) or the cap.
+            "ranks": hit.get("ranks") or {}, "capped": bool(hit.get("capped")),
             # Checked live, so a passage from any index is screened the same way.
             "flags": guard.instruction_flags(hit["text"])}
 
 
+_BY = {"dense": "by meaning", "bm25": "by words (BM25)", "hybrid": "by meaning and by words (hybrid)"}
+
+
 def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
         profile_id: str = profiles.DEFAULT, prompt_version: str = DEFAULT_VERSION,
+        search: SearchSpec = DENSE,
         retriever: Retriever | None = None, client: OllamaClient | None = None) -> Iterator[Event]:
     question = question.strip()
     if not question:
@@ -103,12 +109,19 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
     stage = "search"
     try:
         r = retriever or active_retriever(profile_id)
-        hits, t = r.dense(question, k)
-        trace.add("embed", "Embedded the question", t["embed_ms"],
-                  model=r.profile.embedding.model, prefix=r.profile.embedding.query_prefix)
-        yield "stage", trace.steps[-1].as_dict()
-        trace.add("search", f"Searched {r.manifest['rows']:,} passages by meaning", t["search_ms"],
-                  method="dense", metric="cosine", exact=True, k=k)
+        hits, found = r.search(question, k, search)
+        t = found["timings"]
+        if "embed_ms" in t:
+            trace.add("embed", "Embedded the question", t["embed_ms"],
+                      model=r.profile.embedding.model, prefix=r.profile.embedding.query_prefix)
+            yield "stage", trace.steps[-1].as_dict()
+        search_ms = t.get("search_ms", 0) + t.get("bm25_ms", 0) + t.get("fuse_ms", 0)
+        trace.add("search", f"Searched {r.manifest['rows']:,} passages {_BY[search.method]}", search_ms,
+                  **search.describe(), k=k,
+                  lists={name: [{"rank": h["rank"], "chunk_id": h["chunk_id"]} for h in hits_[:max(k, 10)]]
+                         for name, hits_ in found["lists"].items()},
+                  capped=sum(1 for h in hits if h.get("capped")),
+                  timings={key: round(v, 1) for key, v in t.items()})
         yield "stage", trace.steps[-1].as_dict()
 
         stage = "guard"
@@ -136,6 +149,7 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
                        "messages": messages, **budget},
             "model": {"name": gen.model, "backend": "local", "host": OLLAMA_URL, **asdict(gen)},
             "index": r.index_info(),
+            "search": search.describe(),
         }
         yield "ready", info
 

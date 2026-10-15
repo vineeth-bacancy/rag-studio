@@ -53,3 +53,21 @@ def test_handbuilt_variant_is_byte_identical_to_answer_py():
 
 
 HANDBUILT_SHA256 = "04280fede52408e1a6cb0c54c32a041c717370f1d75892799d5eeda31e40f6f2"
+
+
+def test_v4_changes_only_rule_4_of_v3():
+    v3, v4 = prompt.system_prompt("v3").splitlines(), prompt.system_prompt("v4").splitlines()
+    changed = [(a, b) for a, b in zip(v3, v4) if a != b]
+    assert len(v3) == len(v4) and len(changed) == 1
+    assert changed[0][0].startswith("4. Never say which section")
+    assert changed[0][1] == prompt.RULE_4_V4
+
+
+def test_a_passage_shows_its_section_label_only_when_it_has_one():
+    msgs = prompt.build_messages("Q?", [
+        {"chunk_id": "d:p19:c2", "text": "Risks...", "label": "Document: GEP\nSection: Executive Summary"},
+        {"chunk_id": "d:p6:c1", "text": "beta", "label": None}], "v4")
+    user = msgs[1]["content"]
+    assert "[1] d:p19:c2\nDocument: GEP\nSection: Executive Summary\nRisks..." in user
+    assert "[2] d:p6:c1\nbeta" in user
+    assert user.startswith(f"Context:\n{prompt.FENCE_OPEN}\n")

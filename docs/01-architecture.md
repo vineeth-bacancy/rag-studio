@@ -26,7 +26,7 @@ only one implementation.
 
 ## Engine modules
 
-Present now (M2). Each RAG step has a doc in `docs/steps/`.
+Present now (M3). Each RAG step has a doc in `docs/steps/`.
 
 | Module | Job |
 |---|---|
@@ -39,24 +39,25 @@ Present now (M2). Each RAG step has a doc in `docs/steps/`.
 | `guard.py` | The injection guard: hidden text found by drawing the page with and without its text; instruction-like phrases flagged |
 | `clean.py` | NFKC (baseline) and the full order: hidden text, NFKC, "Th" glyphs, footnote markers, letter spacing, headers and footers, dot leaders, hyphens, whitespace. Every change is a mark with the original text |
 | `structure.py` | Section paths (bookmarks, then headings by font size), printed page labels, contents pages and reference lists tagged |
-| `chunk.py` | The baseline fixed-size chunker, defect kept; each passage stores its character span |
-| `profiles.py` | Index profiles: parser + cleaner + chunker + embedding model, prefixes, dimensions, metric |
-| `embed.py` | The embedder for a profile; refuses a missing model or a different digest |
-| `store.py` | LanceDB: one table per build, atomic pointer switch, exact cosine search, build history |
-| `ingest.py` | parse → clean (and guard) → chunk → embed → store, incremental by content hash, a manifest per build; cleaned documents cached by file, parser, cleaner and the cleaning code's hash |
-| `retrieve.py` | Opens a profile's active build; refuses a build made with another setup; dense search |
-| `prompt.py` | Versioned system prompts (v2, v2-handbuilt, v3 with passages fenced as data) with sha256; the context block; truncation check |
+| `chunk.py` | The baseline fixed-size chunker (defect kept) and its word-boundary fix; structure-aware passages (paragraphs and tables packed within one section) and semantic passages (cut where neighbouring sentences stop being similar), both with a section label; recursive and sentence chunkers for the playground. Every passage is an exact slice of its page |
+| `profiles.py` | Index profiles: parser + cleaner + chunker (+ section labels) + embedding model, prefixes, dimensions, metric |
+| `embed.py` | The embedder for a profile; refuses a missing model or a different digest. A sentence-vector cache on disk (per model digest) for semantic chunking |
+| `store.py` | LanceDB: one table per build, atomic pointer switch, exact cosine search, the word index (native full-text, BM25) over exactly what was embedded, build history |
+| `ingest.py` | parse → clean (and guard) → chunk → embed → store → word index, incremental by content hash (of the section label and the text), a manifest per build; cleaned documents cached by file, parser, cleaner and the cleaning code's hash; builds made before M3 get their word index in place |
+| `retrieve.py` | Opens a profile's active build; refuses a build made with another setup; dense, BM25 and hybrid search (our own RRF, K = 60, 50 deep per list); the optional section cap |
+| `prompt.py` | Versioned system prompts (v2, v2-handbuilt, v3 with passages fenced as data, v4 with rule 4 relaxed for labelled passages) with sha256; the context block (with the section label when a passage has one); truncation check |
 | `answer.py` | The one answering path: events stage → ready → delta → done/error; the guard step; citations built by code |
 | `trace.py` | The in-app trace: each finished step with its duration |
 | `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time), the ladder with variants, two-run comparison |
 | `library.py` | The PDFs, their titles, what the active index holds of each, and the page inspector's data |
+| `learn.py` | How it works: the chunk playground, the search lab (three lists side by side), the vector store's tables, versions and indexes, and the exact-vs-ANN recall check on a scratch copy |
 | `health.py` | System Health: every check returns a status from one vocabulary and never raises |
 | `cli.py` | Terminal views behind `./rag`: health, ingest, eval |
 
 Planned, each arriving with its milestone: `context`, `rewrite`, `agent`,
 `rerank`, `vision`, `judge`.
 
-## API surface (M2)
+## API surface (M3)
 
 | Endpoint | Returns |
 |---|---|
@@ -69,13 +70,17 @@ Planned, each arriving with its milestone: `context`, `rewrite`, `agent`,
 | `GET /api/documents/{doc}/pages/{n}/boxes?start=&end=&profile=&chunk=` | A passage's lines on its page, in 0..1 coordinates: an exact span (baseline), words aligned (PyMuPDF + cleaning) or Docling's item boxes |
 | `GET /api/documents/{doc}/pages/{n}/inspect` | The page inspector: raw and clean text with every rule's marks, headers and footers, hidden text, sections, kinds, for PyMuPDF and (once converted) Docling |
 | `GET /api/documents/{doc}/cleaning` | Per-document counts per rule and parser, and the pages where a rule acted |
-| `GET /api/indexes` | Each profile and its active build's manifest |
-| `POST /api/ask` | One question as server-sent events (`web/api/sse.py`); `profile` and `prompt` choose the index and prompt version |
+| `GET /api/indexes` | Each profile, its active build's manifest, whether it has a word index and section labels; the search methods |
+| `POST /api/ask` | One question as server-sent events (`web/api/sse.py`); `profile`, `prompt`, `search` (dense, bm25, hybrid) and `section_cap` choose the setup |
 | `GET /api/golden` | The test-question sets |
 | `GET /api/eval/runs`, `GET /api/eval/runs/{id}` | Run history; one run with every question |
-| `POST /api/eval/runs`, `POST /api/eval/runs/{id}/cancel` | Start a run in the background (409 if one is running); cancel it after the current question |
+| `POST /api/eval/runs`, `POST /api/eval/runs/{id}/cancel` | Start a run in the background (409 if one is running), with the same setup fields as Ask; cancel it after the current question |
 | `GET /api/eval/ladder` | The 11 ladder rows, each with its variants, filled from tagged runs |
 | `GET /api/eval/compare?a=&b=` | Two runs side by side: setup differences and the questions whose outcome or retrieval changed |
+| `GET /api/learn/chunk?doc_id=&page=&parser=&method=&size=&overlap=&percentile=` | The chunk playground: one cleaned page cut by any chunker; semantic adds the similarity curve |
+| `GET /api/learn/search?q=&profile=&k=&cap=` | The search lab: dense, BM25 and hybrid lists with each passage's rank in the others, and the first answer page's rank for a test question |
+| `GET /api/learn/store?profile=` | A build's LanceDB table: columns, a sample row, versions, indexes, size, other builds, the last ANN check |
+| `POST /api/learn/store/ann-check?profile=` | Measure IVF_FLAT, IVF_PQ and IVF_HNSW_SQ against exact search on a scratch copy (recall@10, latency) |
 
 Interactive schema: http://127.0.0.1:8775/api/_docs while the app is running.
 

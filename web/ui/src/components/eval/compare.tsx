@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ErrorState } from "@/components/common/states";
 import type { CompareRow, CompareSide, GoldenSet, Outcome, RunBrief, RunComparison } from "@/lib/api";
 import { NO_DATA, dateTimeLabel } from "@/lib/format";
+import { searchName } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { OutcomeBadge, recallText } from "./badges";
 import { OutcomeCounts } from "./ladder";
@@ -98,8 +99,11 @@ export function RunCompare({
 export function runName(r: RunBrief): string {
   const what = r.label ?? Object.values(r.sets).map((s) => s.name).join(", ");
   const index = r.config.index_label ? ` · ${r.config.index_label}` : "";
+  const search = (r.config.retrieval && r.config.retrieval !== "dense") || r.config.section_cap
+    ? ` · ${searchName(r.config.retrieval, r.config.section_cap)}`
+    : "";
   const prompt = r.spec.mode === "answer" && r.config.prompt_version ? ` · prompt ${r.config.prompt_version}` : "";
-  return `${what} · ${dateTimeLabel(r.started_at)}${index}${prompt}`;
+  return `${what} · ${dateTimeLabel(r.started_at)}${index}${search}${prompt}`;
 }
 
 function ComparisonBody({ data, sets }: { data: RunComparison; sets: GoldenSet[] }) {
@@ -376,6 +380,15 @@ const KEY_LABELS: Record<string, string> = {
   "index.embedding.doc_prefix": "Passage prefix",
   "index.embedding.query_prefix": "Question prefix",
   "retrieval.method": "Search",
+  "retrieval.section_cap": "Limit per section",
+  "retrieval.fusion": "Fusion",
+  "retrieval.rrf_k": "RRF k",
+  "retrieval.depth": "Passages per list",
+  "retrieval.metric": "Metric",
+  "retrieval.exact": "Exact search",
+  "retrieval.word_index.column": "Word index column",
+  "index.config.chunker.method": "Chunker",
+  "index.config.chunker.labels": "Section label format",
   "answer.model": "Answer model",
   "answer.digest": "Answer model digest",
   "answer.quantization": "Answer quantization",

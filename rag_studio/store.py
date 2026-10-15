@@ -10,6 +10,14 @@ pointer is ours.
 vector takes a few milliseconds (measured 7-10 ms for 1,000 × 768), so there is
 no approximate index to lose recall to. The metric is always set to cosine:
 LanceDB's default is squared L2.
+
+**A word index beside the vectors (M3).** Every build gets LanceDB's native
+full-text index for BM25 ("by words"), over exactly the text that was embedded
+(`search_text`: the section label and the passage). Builds made before M3 have
+no `search_text`; their index is over `text`. Stop words are kept: "What is the
+global growth" must still match "global", and BM25's IDF already gives common
+words almost no weight. Adding the word index to an existing build changes no
+row and no vector, so its manifest and earlier runs stay valid.
 """
 from __future__ import annotations
 
@@ -20,18 +28,27 @@ from typing import Any
 import lancedb
 import pyarrow as pa
 
+from lancedb.index import FTS
+
 from rag_studio import paths
 from rag_studio.files import read_json, write_json_atomic
 from rag_studio.profiles import IndexProfile
 
 KEEP_BUILDS = 2
 
-# What the UI and the prompt read back. `vector` stays in the table. Builds
-# made before M2 lack the last three; a read fills them with their defaults.
+# What the UI and the prompt read back. `vector` and `search_text` stay in the
+# table. Builds made before M2 lack kind, page_label and flags, and builds
+# made before M3 lack label; a read fills them with their defaults.
 COLUMNS = ["chunk_id", "doc_id", "page", "section_path", "type", "text", "context",
            "content_hash", "parser", "chunker", "char_start", "char_end",
-           "kind", "page_label", "flags"]
-DEFAULTS: dict[str, Any] = {"kind": "body", "page_label": None, "flags": []}
+           "kind", "page_label", "flags", "label"]
+DEFAULTS: dict[str, Any] = {"kind": "body", "page_label": None, "flags": [], "label": None}
+
+# The word index (research C §2.1, D §10): simple tokenizer, English stemming,
+# stop words kept, positions on (phrase queries), lower case, accents folded.
+FTS_SETTINGS: dict[str, Any] = {"base_tokenizer": "simple", "language": "English", "stem": True,
+                                "remove_stop_words": False, "lower_case": True,
+                                "ascii_folding": True, "with_position": True}
 
 
 def schema(dimensions: int) -> pa.Schema:
@@ -52,6 +69,8 @@ def schema(dimensions: int) -> pa.Schema:
         pa.field("kind", pa.string(), nullable=False),         # body | toc | references
         pa.field("page_label", pa.string()),                   # the printed page number
         pa.field("flags", pa.list_(pa.string()), nullable=False),  # instruction-like phrases (guard)
+        pa.field("label", pa.string()),                        # section label (M3), or null
+        pa.field("search_text", pa.string(), nullable=False),  # exactly what was embedded and indexed
     ])
 
 
@@ -125,6 +144,59 @@ def vectors_by_hash(table: Any) -> dict[str, list[float]]:
     t = table.to_arrow().select(["content_hash", "vector"])
     return dict(zip(t["content_hash"].to_pylist(), t["vector"].to_pylist()))
 
+
+# --------------------------------------------------------------------------- the word index
+
+class WordIndexMissing(RuntimeError):
+    """This build has no full-text index yet."""
+
+
+def fts_column(table: Any) -> str:
+    """The column BM25 searches: what was embedded, or the text for builds
+    made before M3."""
+    return "search_text" if "search_text" in table.schema.names else "text"
+
+
+def fts_index(table: Any) -> dict[str, Any] | None:
+    """The build's full-text index, or None."""
+    for idx in table.list_indices():
+        if idx.index_type == "FTS":
+            return {"name": idx.name, "column": idx.columns[0]}
+    return None
+
+
+def ensure_fts(table: Any) -> dict[str, Any]:
+    """Create the word index if the build has none. Idempotent. Returns what
+    a manifest records about it."""
+    found = fts_index(table)
+    created = False
+    if found is None:
+        column = fts_column(table)
+        table.create_index(column, config=FTS(**FTS_SETTINGS))
+        found = fts_index(table)
+        if found is None:
+            raise RuntimeError("The word index was not created. Rebuild the index with ./rag ingest --force.")
+        table.wait_for_index([found["name"]])
+        created = True
+    return {**found, "settings": FTS_SETTINGS, "created": created,
+            "lancedb_version": lancedb.__version__, "table_version": table.version}
+
+
+def search_bm25(table: Any, query: str, k: int) -> list[dict[str, Any]]:
+    """The k best passages by BM25 over the word index. `score` is LanceDB's
+    BM25 score: comparable within one question only."""
+    if fts_index(table) is None:
+        raise WordIndexMissing("This index has no word index yet, so BM25 and hybrid search are "
+                               "unavailable. Add it with ./rag ingest --profile <profile>.")
+    if not query.strip():
+        return []
+    rows = (table.search(query, query_type="fts", fts_columns=fts_column(table))
+            .limit(k).select([*columns(table), "_score"]).to_list())
+    return [{c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"rank": rank, "score": float(r["_score"])}
+            for rank, r in enumerate(rows, start=1)]
+
+
+# --------------------------------------------------------------------------- dense search
 
 def search_dense(table: Any, vector: list[float], k: int) -> list[dict[str, Any]]:
     """The k nearest passages by cosine similarity, exactly (a flat scan).
