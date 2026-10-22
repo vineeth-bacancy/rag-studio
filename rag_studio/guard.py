@@ -113,9 +113,9 @@ def _pixels(page: pymupdf.Page) -> Any:
     return np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n).astype(np.int16)
 
 
-def _visibility(page: pymupdf.Page, scratch: pymupdf.Page) -> tuple[Any, list[pymupdf.Rect]]:
-    """Per-pixel change when the page's text is removed, and the boxes of any
-    text the removal could not reach (that text must count as visible).
+def _renders(page: pymupdf.Page, scratch: pymupdf.Page) -> tuple[Any, Any, list[pymupdf.Rect]]:
+    """The page drawn as it is and drawn with its text removed, and the boxes
+    of any text the removal could not reach (that text must count as visible).
 
     `scratch` is the same page opened a second time; its text is removed in
     place, so the caller's document is never touched."""
@@ -126,7 +126,32 @@ def _visibility(page: pymupdf.Page, scratch: pymupdf.Page) -> tuple[Any, list[py
     after = _pixels(scratch)
     left = [pymupdf.Rect(s["bbox"]) for s in scratch.get_texttrace()
             if "".join(chr(c[0]) for c in s["chars"]).strip()]
+    return before, after, left
+
+
+def _visibility(page: pymupdf.Page, scratch: pymupdf.Page) -> tuple[Any, list[pymupdf.Rect]]:
+    """Per-pixel change when the page's text is removed, and the text the removal could not reach."""
+    before, after, left = _renders(page, scratch)
     return np.abs(before - after).max(axis=2), left
+
+
+def _png(pixels: Any) -> bytes:
+    h, w = pixels.shape[:2]
+    rgb = np.ascontiguousarray(pixels[:, :, :3].clip(0, 255).astype(np.uint8))
+    return pymupdf.Pixmap(pymupdf.csRGB, w, h, rgb.tobytes(), False).tobytes("png")
+
+
+def visibility_views(page: pymupdf.Page, scratch: pymupdf.Page) -> dict[str, Any]:
+    """What the hidden-text test compares, as PNGs at the resolution it decides at:
+    the page as drawn, the page drawn with its text removed, and the pixels that
+    changed by more than the threshold (red, on a faded copy of the page). Text
+    whose box holds no red pixel was never visible. Shown by How it works 13."""
+    before, after, _ = _renders(page, scratch)
+    changed = np.abs(before - after).max(axis=2) > PIXEL_CHANGE
+    marked = 255 - (255 - before[:, :, :3]) // 4                 # the page, faded to a quarter
+    marked[changed] = (220, 38, 38)
+    return {"page": _png(before), "no_text": _png(after), "change": _png(marked),
+            "changed_pixels": int(changed.sum()), "dpi": VISIBILITY_DPI, "threshold": PIXEL_CHANGE}
 
 
 def hidden_text(page: pymupdf.Page, scratch: pymupdf.Page) -> list[Hidden]:

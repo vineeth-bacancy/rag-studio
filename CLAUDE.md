@@ -245,6 +245,30 @@ Warning / Needs attention / Unavailable.
   median, later 2.9 s), and 43% of lines still begin "The passage…". The
   generation, not the tunnel, is the cost: about 0.3-0.4 lines/s on a T4.
 
+## Engine gotchas (learned in M6)
+
+- **`ollama ps` understates a model's memory.** On 0.32.6 the model runs as
+  `llama-server` (not `ollama runner`); its RSS counts the mapped weights and
+  the KV cache: qwen3.5:4b 6.7 GB RSS while `ps` said 3.4 GB, gemma4:e4b 7.5 GB
+  (`ps`: 1.9 GB). Plan memory from RSS; `scripts/eval_watchdog.sh` measures it.
+- **gemma4:e4b has no Go template** (`{{ .Prompt }}`, `RENDERER gemma4`, a
+  DRAFT model with `draft_num_predict 3`), so its system-prompt handling can't
+  be read: it was verified by behaviour (system "reply PINEAPPLE" → PINEAPPLE).
+  Both new models honour `think: false` (0 thinking characters).
+- **The strict refusal rule hides a difference between models.** qwen3.5:4b
+  refuses and then explains ("I could not find this in the documents. The
+  provided text only contains…"): scored Wrong, like qwen3:1.7b inventing a
+  2031 forecast on the same trap. Read a Wrong's answer before calling a model
+  less safe.
+- **A run records passages by chunk id only.** Replaying a recorded answer
+  (How it works 9/10) reads the rows back from the run's own LanceDB table;
+  `KEEP_BUILDS = 2` prunes old tables, so old runs cannot be replayed (they are
+  left out of the pickers). Since M6 each answer records `messages_sha256`.
+- **Editing `guard.py` re-cleans every PDF** on the next read (it is in the
+  cleaning cache key, `ingest._code_hash`); `./rag test` triggers that read
+  (here at 21:31 on 2026-10-22). Don't do it beside a scorecard whose timings
+  matter.
+
 ## UI gotchas (learned in M3)
 
 - SWR `keepPreviousData` keeps the last result in `data` while the new key

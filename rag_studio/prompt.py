@@ -13,6 +13,7 @@ document and page (rule 5).
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 REFUSAL = "I could not find this in the documents."
@@ -82,14 +83,19 @@ def prompt_sha256(version: str = DEFAULT_VERSION) -> str:
     return hashlib.sha256(system_prompt(version).encode("utf-8")).hexdigest()
 
 
+def passage_entry(n: int, passage: dict[str, Any]) -> str:
+    """One passage as the model reads it: `[n] chunk_id`, its section label (if
+    any) and its text."""
+    return (f"[{n}] {passage['chunk_id']}\n" + (f"{passage['label']}\n" if passage.get("label") else "")
+            + passage["text"])
+
+
 def context_block(passages: list[dict[str, Any]]) -> str:
     """`[n] chunk_id` then the passage text, one blank line between passages:
     the baseline format. A passage with a section label (M3) shows it on the
     lines before its text, exactly as it was embedded, so the model reads
     what the search matched."""
-    return "\n\n".join(
-        f"[{i}] {p['chunk_id']}\n" + (f"{p['label']}\n" if p.get("label") else "") + p["text"]
-        for i, p in enumerate(passages, start=1))
+    return "\n\n".join(passage_entry(i, p) for i, p in enumerate(passages, start=1))
 
 
 def build_messages(question: str, passages: list[dict[str, Any]],
@@ -105,6 +111,14 @@ def build_messages(question: str, passages: list[dict[str, Any]],
 
 def prompt_chars(messages: list[dict[str, str]]) -> int:
     return sum(len(m["content"]) for m in messages)
+
+
+def messages_sha256(messages: list[dict[str, str]]) -> str:
+    """The exact messages sent, as one hash: a run records it per answer, so a
+    replay that rebuilds the prompt (How it works 9) can prove it is byte for
+    byte the one the model read."""
+    blob = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def estimate_tokens(messages: list[dict[str, str]]) -> int:

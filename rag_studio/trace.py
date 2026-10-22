@@ -4,8 +4,8 @@ Each finished step is recorded with its duration and a few numbers, in the
 order it ran. The Ask page's "What happened" panel and every evaluation run
 read this, so the timings a user sees are the ones that were measured.
 
-Optional Phoenix export (OpenTelemetry, loopback only) arrives in M6 and reads
-the same steps.
+A Phoenix export (OpenTelemetry, loopback only) was planned for M6 and cut
+(2026-10-22, docs/plans/m6-m8.md): these steps are the only trace.
 """
 from __future__ import annotations
 

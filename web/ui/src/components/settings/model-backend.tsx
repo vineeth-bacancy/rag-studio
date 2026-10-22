@@ -737,7 +737,7 @@ export function ModelBackend() {
               </span>
             </li>
             <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">
-              <span className="w-24 shrink-0 font-medium">Answer, judge</span>
+              <span className="w-24 shrink-0 font-medium">Answer</span>
               <span className="min-w-0 flex-1 text-pretty text-muted-foreground">
                 <Cpu className="mr-1 inline size-3 align-[-1px]" aria-hidden />
                 Local AI.

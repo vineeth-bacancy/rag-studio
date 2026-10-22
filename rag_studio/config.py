@@ -71,4 +71,9 @@ MODEL_NOTES: dict[str, str] = {
     "qwen3:4b": "This build ignores thinking off: 128-829 s per answer here. Not recommended.",
     "qwen3:8b": "About 141-246 s per answer on this CPU; a full scorecard takes about 34 minutes.",
     "qwen3:1.7b": "About 25 s per answer on this CPU. The baseline answer model.",
+    # Ladder row 10 (2026-10-22), 6d + the 4B reranker, Sets A+D.
+    "qwen3.5:4b": "Thinking off works. About 44 s per answer on this CPU (29-87 s), 6.7 GB in memory; "
+                  "scored 22 · 1 · 2 like qwen3:1.7b, and its two Wrongs are refusals followed by an explanation.",
+    "gemma4:e4b": "Thinking off works. About 47 s per answer on this CPU (29-102 s), 8 GB in memory: close other "
+                  "apps first. Scored 24 · 1 · 0, the best answer model measured here (both traps refused).",
 }

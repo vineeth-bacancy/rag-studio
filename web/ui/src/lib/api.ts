@@ -59,6 +59,12 @@ export const api = {
   /** Measure approximate indexes against exact search on one build (5-60 s). */
   annCheck: (profile: string) =>
     request<AnnCheck>(`/learn/store/ann-check?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  /** Steps 10 and 12: an edited answer read by the same citation, refusal and scoring code. Changes nothing. */
+  answerCheck: (body: { run: string; question: string; text: string }) =>
+    request<AnswerCheck>("/learn/answer-check", { method: "POST", body: JSON.stringify(body) }),
+  /** Step 13: the crafted page answered now by the Answer role's model (10-60 s). */
+  safetyLive: (version: "v2" | "v3") =>
+    request<SafetyLive>(`/learn/safety/live?version=${version}`, { method: "POST" }),
   // Conversations (M5)
   chats: () => request<{ chats: ChatBrief[] }>("/chats"),
   chat: (id: string) => request<ChatFull>(`/chats/${encodeURIComponent(id)}`),
@@ -1402,4 +1408,291 @@ export interface ContextStatus {
   job: ContextJobFile | null;
   can: Can;
   model: string;
+}
+
+// ---------------------------------------------------------------------------
+// How it works (M6): steps 9, 10, 12 and 13. Mirrors rag_studio/learn.py.
+// ---------------------------------------------------------------------------
+
+export type RunHead = Pick<RunBrief, "id" | "label" | "ladder" | "started_at" | "status" | "config">;
+
+/** A run that answered one test question (`recorded_answers`), for the pickers. */
+export interface RecordedChoice {
+  run_id: string;
+  label: string | null;
+  ladder: { row: number; label: string } | null;
+  started_at: string;
+  index_label: string | null;
+  answer_model: string | null;
+  prompt_version: string | null;
+  rerank: string | null;
+  rewrite: string | null;
+  agent_rounds: number | null;
+  /** The app's defaults: default index, prompt and answer model, every switch off. */
+  default_setup: boolean;
+  outcome: Outcome | null;
+  hit_rank: number | null;
+}
+
+export interface RecordedAnswers {
+  question_id: string;
+  set: string;
+  question: string;
+  history: { question: string; answer: string }[] | null;
+  category: string | null;
+  runs: RecordedChoice[];
+}
+
+/** A passage as the recorded answer's model was shown it, read back from the run's own index build. */
+export interface RecordedSource {
+  n: number;
+  rank: number | null;
+  chunk_id: string;
+  doc_id: string;
+  page: number;
+  page_label: string | null;
+  section_path: string | null;
+  label: string | null;
+  kind: string | null;
+  type: string | null;
+  text: string;
+  flags: GuardFlag[];
+  /** The recorded answer cited it. */
+  cited: boolean;
+}
+
+/** The same question from the same passages, with one thing changed (prompt version or answer model). */
+export interface SamePassages {
+  value: string;
+  run_id: string;
+  label: string | null;
+  ladder: { row: number; label: string } | null;
+  this_run: boolean;
+  outcome: Outcome | null;
+  answer: string;
+  refused: boolean | null;
+  found: string[] | null;
+  missing: string[] | null;
+  generate_ms: number | null;
+  answer_tokens: number | null;
+}
+
+export interface GenerationInfo {
+  model: string | null;
+  think: boolean | null;
+  temperature: number | null;
+  num_ctx: number | null;
+  quantization: string | null;
+  parameter_size: string | null;
+  prompt_version: string | null;
+}
+
+interface RecordedCommon {
+  run: RunHead;
+  question_id: string;
+  set: string;
+  question: string;
+  searched_for: string;
+  history: { question: string; answer: string }[] | null;
+  category: string | null;
+  answer: string;
+  outcome: Outcome | null;
+  refused: boolean | null;
+  expect_labels: string[] | "REFUSE" | null;
+  trap: boolean;
+  sources: RecordedSource[];
+  model: GenerationInfo;
+}
+
+export interface PromptPart {
+  part: "system" | "passage" | "question" | "frame";
+  n?: number;
+  chars: number;
+  /** Ollama's own count split by characters ("measured"), or 4 characters per token ("estimated"). */
+  tokens: number;
+}
+
+export interface PromptVersionView {
+  version: string;
+  sha256: string;
+  system: string;
+  /** The user message this version builds from the same passages. */
+  user: string;
+  against: string | null;
+  /** Lines of `system` that the previous version does not have. */
+  changed: number[];
+  fenced: boolean;
+  current: boolean;
+  measured: SamePassages | null;
+}
+
+/** Step 9 (`prompt_lab`). */
+export interface PromptLab extends RecordedCommon {
+  version: string;
+  prompt_sha256: string;
+  /** identical: proven by the hash the run recorded; rebuilt: the run predates that hash; differs: something changed. */
+  exact: "identical" | "rebuilt" | "differs";
+  messages: { role: string; content: string }[];
+  parts: PromptPart[];
+  budget: {
+    num_ctx: number | null;
+    chars: number;
+    estimated_tokens: number;
+    prompt_tokens: number | null;
+    answer_tokens: number | null;
+    chars_per_token: number | null;
+    truncation_chars_per_token: number;
+    truncated: boolean | null;
+    split: "measured" | "estimated";
+  };
+  markers: { fence_open: string; fence_close: string; reminder: string };
+  versions: PromptVersionView[];
+}
+
+/** One `[n]` group in an answer (answer.py `citation_marks`). */
+export interface CitationMark {
+  start: number;
+  end: number;
+  numbers: number[];
+  valid: number[];
+  invalid: number[];
+}
+
+export interface FactCheck {
+  label: string;
+  found: boolean;
+  spans: [number, number][];
+}
+
+/** Step 10 (`cite_lab`). */
+export interface CiteLab extends RecordedCommon {
+  citations: Citations;
+  marks: CitationMark[];
+  matches_recorded: boolean;
+  usage: Usage | null;
+  timings: RunResult["timings"] | null;
+  found: string[] | null;
+  missing: string[] | null;
+  facts: FactCheck[];
+  refusal: string;
+  /** The answer key changed since this run scored it. */
+  key_changed: boolean;
+  /** The same passages answered by each answer model that was measured on this setup. */
+  models: SamePassages[];
+}
+
+/** An edited answer, read by the engine (`answer_check`). */
+export interface AnswerCheck {
+  citations: Citations;
+  marks: CitationMark[];
+  k: number;
+  refused: boolean;
+  score: { outcome: Outcome | null; found: string[]; missing: string[]; refused: boolean | null };
+  facts: FactCheck[];
+}
+
+export interface EvaluateQuestion {
+  set: string;
+  id: string;
+  question: string;
+  category: string | null;
+  expect_labels: string[] | "REFUSE" | null;
+  found: string[];
+  missing: string[];
+  outcome: Outcome | null;
+  refused: boolean | null;
+  hit_rank: number | null;
+  best_rank: number | null;
+  targets: Target[];
+  answer: string | null;
+  error: string | null;
+  history?: { question: string; answer: string }[] | null;
+  standalone_question?: string | null;
+  rewrite_ok?: boolean | null;
+  trap: boolean;
+  scored: boolean;
+  /** 1 / the rank of the first answer page in the top 50, 0 when it is not there; null without answer pages. */
+  reciprocal: number | null;
+  facts: FactCheck[];
+}
+
+export interface PassInterval {
+  passes: number;
+  n: number;
+  rate: number | null;
+  low: number | null;
+  high: number | null;
+}
+
+/** Step 12 (`evaluate_lab`). */
+export interface EvaluateLab {
+  run: RunHead;
+  k: number | null;
+  deep_k: number | null;
+  sets: Record<string, { name: string; scored: boolean }>;
+  summary: RunSummary | null;
+  /** hit, miss, no_pages (traps) × Pass, Refused, Wrong: the question ids in each cell. */
+  grid: Record<"hit" | "miss" | "no_pages", Record<Outcome, string[]>>;
+  questions: EvaluateQuestion[];
+  interval: PassInterval;
+  against: {
+    run: RunHead;
+    n: number;
+    better: string[];
+    worse: string[];
+    other_changes: string[];
+    /** The exact two-sided sign test on `better` vs `worse`. */
+    p: number;
+    interval: PassInterval;
+    config: { key: string; a: unknown; b: unknown }[];
+  } | null;
+}
+
+export interface SafetyPageChoice {
+  source: string;
+  page: number;
+  title: string | null;
+  hidden: number;
+  reasons: string[];
+}
+
+/** Step 13 (`safety_lab`). Boxes are PDF points: [x0, y0, x1, y1] of a `width` × `height` page. */
+export interface SafetyLab {
+  source: string;
+  page: number;
+  width: number;
+  height: number;
+  hidden: HiddenSpan[];
+  changed_pixels: number;
+  dpi: number;
+  threshold: number;
+  /** The crafted page only: the spans the guard kept. */
+  kept: { text: string; box: PageBox }[] | null;
+  reasons: Record<string, string>;
+  flag_kinds: Record<string, string>;
+  /** Set D's T3 from the same passages with different prompt versions, per setup where several were measured. */
+  trap: {
+    index_label: string | null;
+    model: string | null;
+    versions: Record<string, { run_id: string; label: string | null; outcome: Outcome | null; answer: string }>;
+  }[];
+  text: { raw: string; clean: string } | null;
+  flags: GuardFlag[];
+  question: string | null;
+  truth: { visible: string; injection: string; white_on_dark: string } | null;
+  fence: { version: string; rule: string | null; user: string }[] | null;
+}
+
+export interface SafetyLive {
+  version: string;
+  answer: string;
+  refused: boolean;
+  says_visible: boolean;
+  says_injected: boolean;
+  /** Which figures the answer contains; "both" needs a reader (a quoted instruction or an obeyed one). */
+  verdict: "kept" | "obeyed" | "both" | "refused" | "neither";
+  model: { name: string };
+  usage: Usage;
+  trace: TraceStep[];
+  citations: Citations;
 }

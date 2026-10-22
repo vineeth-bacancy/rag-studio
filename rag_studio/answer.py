@@ -63,6 +63,17 @@ def cited_numbers(text: str) -> list[int]:
     return nums
 
 
+def citation_marks(text: str, k: int) -> list[dict[str, Any]]:
+    """Every `[n]` group in an answer, where it sits, and which of its numbers
+    point at one of the k passages shown. How it works 10 draws these."""
+    out = []
+    for m in _CITE.finditer(text):
+        nums = [int(n) for n in m.group(1).replace(",", " ").split()]
+        out.append({"start": m.start(), "end": m.end(), "numbers": nums,
+                    "valid": [n for n in nums if 1 <= n <= k], "invalid": [n for n in nums if not 1 <= n <= k]})
+    return out
+
+
 def is_refusal(text: str) -> bool:
     """Strict on purpose (spec §5.7): a wrong fact followed by the refusal
     sentence is an answer, not a refusal."""

@@ -123,6 +123,11 @@ export const STAGES: Stage[] = [
     what: "Number the passages and put them in front of the model, with strict rules about using only them.",
     example: "A whitespace-only change to the prompt flipped a small model between refusing and inventing.",
     arrives: "M6",
+    explain: [
+      "The prompt is everything the answer model reads: a fixed set of rules, then the numbered passages and the question. It sees nothing else.",
+      "Its exact text decides answers: one blank line moved two test questions here, and a prompt longer than the model's window loses its start without any error.",
+      "Pick a recorded answer below to see its messages exactly as sent, the context budget they used, and the same passages under prompts v2, v3 and v4.",
+    ],
   },
   {
     slug: "generate",
@@ -130,6 +135,11 @@ export const STAGES: Stage[] = [
     what: "The model writes the answer and cites [n]; code, not the model, turns each [n] into a page.",
     example: "Told to flag section mismatches it couldn't see, qwen3:1.7b said a Chapter 1 fact came from the executive summary.",
     arrives: "M6",
+    explain: [
+      "The answer model writes from the passages and points at each one it used with its number, [n]; code, not the model, turns each number into a document and page.",
+      "A page number a model types can be invented; a number can only point at a passage it was shown, and one with no passage behind it is reported, never fixed. When nothing states the answer, only the exact refusal counts.",
+      "Pick a recorded answer below to follow each [n] to its page, edit the answer and watch the same code read it, and compare the answer models on the same passages.",
+    ],
   },
   {
     slug: "figures",
@@ -144,6 +154,11 @@ export const STAGES: Stage[] = [
     what: "Score every setup on questions with known answers, so no upgrade is assumed to help.",
     example: "A keyword check passed four answers that contained invented claims.",
     arrives: "M6",
+    explain: [
+      "An evaluation asks every test question with one setup and scores each answer Pass, Refused or Wrong, beside whether an answer page was found at all.",
+      "That is how no upgrade is assumed to help; but 25 questions are few, so a difference of two is a hint to measure more, not proof.",
+      "Pick a recorded run below to take its scorecard apart, and another to see which questions changed and whether that could be chance.",
+    ],
   },
   {
     slug: "safety",
@@ -151,5 +166,10 @@ export const STAGES: Stage[] = [
     what: "Treat PDF text as data, never instructions: drop hidden text and flag passages that give orders.",
     example: "Text a reader can't see can still reach the model, unless the parser drops it.",
     arrives: "M6",
+    explain: [
+      "Text from a PDF is data, never instructions: the guard drops text a reader cannot see, flags text that tries to give the model orders, and prompt v3 fences passages off as quoted data.",
+      "Everything in a passage reaches the model, including a footer hidden under a box or a sentence written to steer it.",
+      "Pick the crafted test page or a real page below to see what the guard compared, what it dropped, and how a fenced prompt holds up.",
+    ],
   },
 ];

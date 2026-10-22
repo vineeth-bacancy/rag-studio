@@ -7,6 +7,7 @@ import http.client
 import importlib.util
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -171,7 +172,13 @@ def test_it_binds_to_loopback_only_and_has_no_auth_of_its_own():
 
 def test_the_log_has_counts_and_never_content(server, capsys):
     call(server[1], "POST", "/rerank", GOOD | {"query": "SECRET QUESTION", "documents": ["SECRET PASSAGE"]})
-    out = capsys.readouterr().out
+    # The server thread logs after it has replied, so under load the line can arrive a moment later.
+    out = ""
+    for _ in range(50):
+        out += capsys.readouterr().out
+        if "documents=" in out:
+            break
+        time.sleep(0.02)
     assert "documents=1" in out and "SECRET" not in out
 
 

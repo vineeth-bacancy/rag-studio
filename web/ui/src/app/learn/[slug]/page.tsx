@@ -5,11 +5,15 @@ import { ArrowLeft, ArrowRight, ChevronRight } from "lucide-react";
 
 import { buttonVariants } from "@/components/ui/button";
 import { ChunkLab } from "@/components/learn/chunk-lab";
+import { CiteLab } from "@/components/learn/cite-lab";
 import { CleanLab } from "@/components/learn/clean-lab";
 import { ContextLab } from "@/components/learn/context-lab";
 import { EmbedLab } from "@/components/learn/embed-lab";
+import { EvaluateLab } from "@/components/learn/evaluate-lab";
 import { ParseLab } from "@/components/learn/parse-lab";
+import { PromptLab } from "@/components/learn/prompt-lab";
 import { RewriteLab } from "@/components/learn/rewrite-lab";
+import { SafetyLab } from "@/components/learn/safety-lab";
 import { SearchLab } from "@/components/learn/search-lab";
 import { StoreLab } from "@/components/learn/store-lab";
 import { APP_NAME, ROUTES } from "@/lib/routes";
@@ -25,6 +29,10 @@ const WIDGETS: Record<string, React.ComponentType> = {
   store: StoreLab,
   search: SearchLab,
   rewrite: RewriteLab,
+  prompt: PromptLab,
+  generate: CiteLab,
+  evaluate: EvaluateLab,
+  safety: SafetyLab,
 };
 
 type Props = { params: Promise<{ slug: string }> };

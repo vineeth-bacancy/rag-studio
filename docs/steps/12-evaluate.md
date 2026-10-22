@@ -40,7 +40,10 @@ lists of alternatives ("20.4" or "20,384"), or patterns with number boundaries
 
 Keyword scoring checks that facts are present, not that every claim is
 supported: A1 passes while also claiming "166 reflects the 3-year total".
-The faithfulness judge (DeepEval, M6) is what catches that.
+A faithfulness judge (DeepEval) would catch that; it was **cut** from this
+version (2026-10-22, `docs/plans/m6-m8.md`), with RAGAS and tracing, so this
+deterministic scorecard is the only judge. The Judge role reads "Arrives in a
+later version".
 
 **Set E is judged in order: the rewrite, then retrieval, then the answer.**
 Each follow-up lists words its rewritten question must contain
@@ -138,3 +141,26 @@ prompt version, the index), the recall and Pass · Refused · Wrong of each, and
 every question both asked, marking the ones whose outcome or Hit/Miss changed.
 "Changed only" hides the rest. That is how an upgrade's effect is read: not as
 a total, but question by question.
+
+## How it works 12 (M6)
+
+`learn.evaluate_lab(run, against)`, `/learn/evaluate`: one recorded run's
+scorecard taken apart, read from the saved run (no model call).
+
+- **The grid:** Hit / Miss / Trap (no answer page) × Pass / Refused / Wrong,
+  with the question ids in each cell and what each corner means (a Miss that
+  is Wrong is the dangerous one: nothing was found and it answered anyway).
+- **One question, scored:** the expected facts, where each matched in the
+  answer (`eval.fact_spans`, the same rule as `fact_found`), and an editable
+  copy scored again by `score_answer` (`/learn/answer-check`).
+- **MRR and recall@20:** one bar per question, height 1 / the deep rank, so
+  MRR is visibly their average.
+- **Set E's chain** when the run has follow-ups.
+- **A hint, not proof:** `eval.pass_interval` (Wilson 95%) for the pass
+  rate, and against another run `eval.sign_test` (exact two-sided McNemar) on
+  the questions that changed between Pass and not. Two baseline Set D runs on
+  2026-10-14 wrote D3 word for word the same (only the key changed between
+  them), so at temperature 0 the uncertainty is in which 25 questions were
+  asked, not in sampling. Example: 6d (22 · 1 · 2) against 5d (20 · 3 · 2): D7
+  and D10 became Passes, none got worse, p = 0.5; 22 of 25 is consistent with a
+  true pass rate of 70-96%.

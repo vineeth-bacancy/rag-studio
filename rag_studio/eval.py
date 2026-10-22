@@ -14,7 +14,8 @@ their recorded configurations say what changed (rule 2).
 
 Facts are matched as case-insensitive substrings, and the refusal must be the
 whole answer. Keyword scoring checks that facts are present, not that every
-claim is supported; the faithfulness judge arrives in M6 (spec §5.8).
+claim is supported. The faithfulness judge (spec §5.8) was cut from this
+version (2026-10-22), so this scorecard is the only judge.
 
 Retrieval is scored beside the outcome: **Hit@N** when the first passage from
 an answer page is at rank N within the top k, otherwise **Miss**. The run also
@@ -31,6 +32,7 @@ import secrets
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from math import comb
 from typing import Any, Callable
 
 import pymupdf
@@ -40,7 +42,7 @@ from rag_studio.answer import DEFAULT_K, GenerationSpec, ask, is_refusal
 from rag_studio.config import role_model
 from rag_studio.files import read_json, write_json_atomic
 from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
-from rag_studio.prompt import DEFAULT_VERSION, prompt_sha256
+from rag_studio.prompt import DEFAULT_VERSION, messages_sha256, prompt_sha256
 from rag_studio.rerank import RerankError
 from rag_studio.retrieve import Retriever, SearchSpec, retriever as active_retriever
 from rag_studio.rewrite import RewriteBadOutput, RewriteUnavailable
@@ -214,6 +216,46 @@ def score_answer(expect: list[Any] | str | None, text: str | None) -> dict[str, 
     missing = [fact_label(f) for f in expect if not fact_found(f, text)]
     outcome = "REFUSED" if refused else "PASS" if not missing else "WRONG"
     return {"outcome": outcome, "found": found, "missing": missing, "refused": refused}
+
+
+def fact_spans(fact: Any, text: str) -> list[tuple[int, int]]:
+    """Where a fact matches in an answer, by the same rule as `fact_found`
+    (every match, in order), so How it works can mark exactly what the
+    scorecard counted."""
+    if isinstance(fact, dict):
+        return [m.span() for m in re.finditer(fact["pattern"], text, re.I)]
+    low = text.lower()
+    spans = []
+    for alt in ([fact] if isinstance(fact, str) else fact):
+        needle, at = alt.lower(), 0
+        while needle and (i := low.find(needle, at)) >= 0:
+            spans.append((i, i + len(needle)))
+            at = i + len(needle)
+    return sorted(spans)
+
+
+# --------------------------------------------------------------------------- how sure a run is
+
+def pass_interval(passes: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """The Wilson 95% interval for a pass rate of `passes` of `n` questions:
+    the range of true rates this one run is consistent with. None for n = 0."""
+    if n <= 0:
+        return None
+    p = passes / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / (1 + z * z / n)
+    return (round(max(0.0, centre - half), 4), round(min(1.0, centre + half), 4))
+
+
+def sign_test(better: int, worse: int) -> float:
+    """Two runs on the same questions: the exact two-sided sign test (McNemar's
+    exact test) on the questions that changed. How often a split at least this
+    lopsided happens by chance if neither setup is better. 1.0 when nothing changed."""
+    n = better + worse
+    if n == 0:
+        return 1.0
+    tail = sum(comb(n, i) for i in range(min(better, worse) + 1)) / 2 ** n
+    return round(min(1.0, 2 * tail), 4)
 
 
 # --------------------------------------------------------------------------- runs
@@ -602,6 +644,8 @@ def _answer_one(res: dict[str, Any], q: dict[str, Any], spec: RunSpec, r: Retrie
     res["answer"] = data["answer"]
     res["citations"] = data["citations"]
     res["usage"] = data["usage"]
+    # The exact messages, as a hash and a size: a replay (How it works 9) proves it rebuilt them byte for byte.
+    res["prompt"] = {"chars": data["prompt"]["chars"], "messages_sha256": messages_sha256(data["prompt"]["messages"])}
     res["timings"]["generate_ms"] = next((s["ms"] for s in data["trace"] if s["id"] == "generate"), None)
     res.update(score_answer(q.get("expect"), data["answer"]))
 
@@ -773,7 +817,7 @@ def compare(a_id: str, b_id: str) -> dict[str, Any]:
             "rank_moved": (y["best_rank"] or 0) != (x["best_rank"] or 0),
         })
     sets = sorted({r["set"] for r in rows})
-    return {"a": _run_head(a), "b": _run_head(b), "config": config, "rows": rows,
+    return {"a": run_head(a), "b": run_head(b), "config": config, "rows": rows,
             "summary": {"a": summarize([r for r in a["results"] if r["set"] in sets], sets),
                         "b": summarize([r for r in b["results"] if r["set"] in sets], sets)},
             "changed": sum(1 for r in rows if r["outcome_changed"] or r["retrieval_changed"])}
@@ -784,7 +828,7 @@ def _brief_row(x: dict[str, Any]) -> dict[str, Any]:
                                   "refused", "error")}
 
 
-def _run_head(r: dict[str, Any]) -> dict[str, Any]:
+def run_head(r: dict[str, Any]) -> dict[str, Any]:
     return {k: r.get(k) for k in ("id", "label", "ladder", "started_at", "status")} | {
         "config": _brief(r.get("config") or {})}
 

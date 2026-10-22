@@ -94,6 +94,30 @@ v4 is v3 with only rule 4 replaced (tested: one line differs):
 v4 assumes labelled passages; the Ask page says so when v4 is picked on an
 index without them. Measured in `docs/ladder.md`, row 3.
 
-## Next (M6)
+## How it works 9 (M6)
 
-How it works step 9 shows the exact messages and the budget bar.
+`learn.prompt_lab(run, question)`, `/learn/prompt`. A recorded answer's exact
+messages, **rebuilt from its run**: a run records each answer's passages by
+chunk id and the LanceDB table it searched, so the lab reads those rows back
+from that table and calls `build_messages` with the run's prompt version. It
+refuses (rather than showing something close) when the prompt's hash no
+longer matches or the build was pruned (`KEEP_BUILDS = 2`).
+
+Since M6 every answered row records `prompt: {chars, messages_sha256}`
+(`prompt.messages_sha256`, canonical JSON of the messages), so a replay of a
+new run is proven **byte for byte** ("identical"); older runs say "rebuilt".
+
+The widget shows:
+
+- both messages exactly, with the passage headers, section labels, the v3
+  fence and reminder marked (the text itself is untouched);
+- the **context budget**: two bars, the prompt and the answer inside the
+  8,192-token window, and the parts inside the prompt. Ollama's
+  `prompt_eval_count` is the total; the split between parts is by characters
+  (`passage_entry` measures each passage exactly as `context_block` writes it),
+  so part sizes are close, not exact. 6d's A1: 1,502 tokens, 6,129 characters,
+  4.08 characters per token, 18% of the window with the answer;
+- why passages are numbered: the `[n]` → passage → document and page table;
+- **v2, v3 and v4 side by side** for the same passages, the lines each
+  version adds marked, and the outcome where a run on the same setup (index,
+  embedding, k, retrieval, answer model) measured that version.

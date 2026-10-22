@@ -72,8 +72,8 @@ adds the word index (for BM25) to a build that lacks one, in place.
 | M3 | Word-boundary chunks, structure-aware chunks with section labels, hybrid search, a per-section cap; How it works 1-3, 6, 7. Ladder rows 3-4 | **Done** (2026-10-15) |
 | M4 | Colab gateway and connect code, index profiles (Qwen3-Embedding 0.6B, EmbeddingGemma 2, Qwen3-Embedding 8B on Colab), the Indexes page, the vector match check, How it works 5. Ladder row 5 | **Done** (2026-10-15) |
 | M5 | Reranker (0.6B here, 4B/8B on Colab), context lines, query rewriting, multi-step search, conversations with follow-up rewriting; the Search lab's reranked column; How it works 4 and 8. Ladder rows 6-9, Set E | **Done** (2026-10-22) |
-| M6 | Answer models qwen3.5:4b and gemma4:e4b (thinking off verified), ladder row 10; How it works 9, 10, 12, 13 | Next (the judge, RAGAS and tracing were cut) |
-| M7 | Figures as vision descriptions (Set C), ladder row 11; How it works 11 | Planned (image embeddings cut) |
+| M6 | Answer models qwen3.5:4b and gemma4:e4b (thinking off verified), ladder row 10; How it works 9, 10, 12, 13 | **Done** (2026-10-22; gemma4:e4b 24 · 1 · 0. The judge, RAGAS and tracing were cut) |
+| M7 | Figures as vision descriptions (Set C), ladder row 11; How it works 11 | Next (image embeddings cut) |
 | M8 | Full QA, polish, complete docs | Planned (browser upload deferred to a later version) |
 
 The reduced plan for M6-M8 (decided 2026-10-22) is `docs/plans/m6-m8.md`.

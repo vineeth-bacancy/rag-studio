@@ -785,3 +785,105 @@ def post_ann_check(profile: str = Query(profiles.DEFAULT, max_length=40)) -> dic
         return _learn_call(learn.ann_check, _profile(profile).id)
     finally:
         _ann_lock.release()
+
+
+# --------------------------------------------------------------------------- how it works (M6)
+
+QUESTION_ID = r"^[A-Z][0-9]{1,2}$"
+
+
+def _run_id(run_id: str) -> str:
+    if not _RUN_ID.match(run_id):
+        _fail(404, "No such run. It may have been deleted.")
+    return run_id
+
+
+@app.get("/api/learn/answers")
+def get_recorded_answers(question: str = Query(..., pattern=QUESTION_ID)) -> dict:
+    """Steps 9 and 10: the runs that answered one test question, the default setup first."""
+    return _learn_call(learn.recorded_answers, question)
+
+
+@app.get("/api/learn/prompt")
+def get_prompt_lab(run: str = Query(..., max_length=40), question: str = Query(..., pattern=QUESTION_ID)) -> dict:
+    """Step 9: the exact messages of a recorded answer, its context budget, and
+    prompts v2, v3 and v4 for the same passages. Read from the run: no model call."""
+    return _learn_call(learn.prompt_lab, _run_id(run), question)
+
+
+@app.get("/api/learn/cite")
+def get_cite_lab(run: str = Query(..., max_length=40), question: str = Query(..., pattern=QUESTION_ID)) -> dict:
+    """Step 10: a recorded answer's citations mapped to pages, the refusal rule,
+    and the same passages answered by the other answer models."""
+    return _learn_call(learn.cite_lab, _run_id(run), question)
+
+
+class AnswerCheckRequest(BaseModel):
+    run: str = Field(max_length=40)
+    question: str = Field(pattern=QUESTION_ID)
+    text: str = Field(max_length=4000)
+
+
+@app.post("/api/learn/answer-check")
+def post_answer_check(req: AnswerCheckRequest) -> dict:
+    """Steps 10 and 12: an edited answer read by the same citation, refusal and
+    scoring code as a recorded one. Changes nothing."""
+    return _learn_call(learn.answer_check, _run_id(req.run), req.question, req.text)
+
+
+@app.get("/api/learn/evaluate")
+def get_evaluate_lab(run: str = Query(..., max_length=40), against: str | None = Query(None, max_length=40)) -> dict:
+    """Step 12: one run's scorecard taken apart; with `against`, the sign test
+    on the questions that changed between the two runs."""
+    return _learn_call(learn.evaluate_lab, _run_id(run), _run_id(against) if against else None)
+
+
+def _safety_source(source: str) -> str:
+    if source != learn.CRAFTED:
+        _doc_path(source)
+    return source
+
+
+@app.get("/api/learn/safety")
+def get_safety_lab(source: str = Query(learn.CRAFTED, max_length=100), page: int = Query(1, ge=1)) -> dict:
+    """Step 13: one page through the guard (the crafted test page, or a real
+    page where hidden text was dropped). The first view of a page draws it
+    twice; later views come from memory."""
+    return _learn_call(learn.safety_lab, _safety_source(source), page)
+
+
+@app.get("/api/learn/safety/pages")
+def get_safety_pages() -> dict:
+    """Step 13: the crafted page and every real page where hidden text was dropped."""
+    return _learn_call(learn.safety_pages)
+
+
+@app.get("/api/learn/safety/image")
+def get_safety_image(source: str = Query(learn.CRAFTED, max_length=100), page: int = Query(1, ge=1),
+                     view: str = Query(..., pattern="^(page|no_text|change)$")) -> Response:
+    """One of the guard's three images of a page, as PNG."""
+    png = _learn_call(learn.safety_image, _safety_source(source), page, view)
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/api/learn/safety/flags")
+def get_safety_flags(text: str = Query(..., min_length=1, max_length=2000)) -> dict:
+    """Any text through the guard's instruction check."""
+    return learn.flag_check(text)
+
+
+_live_lock = threading.Lock()
+
+
+@app.post("/api/learn/safety/live")
+def post_safety_live(version: str = Query(..., pattern="^(v2|v3)$")) -> dict:
+    """Step 13, live: the crafted page as the only passage, answered now by the
+    Answer role's model with prompt v2 or v3. One at a time."""
+    if not _live_lock.acquire(blocking=False):
+        _fail(409, "An answer is already being written. Wait for it to finish.")
+    try:
+        return _learn_call(learn.safety_live, version)
+    except learn.LiveFailed as e:
+        _fail(503, str(e))
+    finally:
+        _live_lock.release()

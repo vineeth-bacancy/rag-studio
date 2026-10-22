@@ -38,6 +38,38 @@ stops Next's rewrite proxy gzipping the stream into one late burst. Measured
 in the browser: the sources arrive within half a second, before the model
 starts.
 
-## Next (M6)
+## How it works 10 (M6)
 
-New answer models (qwen3.5:4b, gemma4:e4b), measured on the same scorecard.
+`learn.cite_lab(run, question)`, `/learn/cite`, on a recorded answer with its
+passages read back from the run's own index build (as step 9):
+
+- **From [n] to a page:** `answer.citation_marks(text, k)` finds every `[n]`
+  group and its position; `answer.citations` maps each valid number to its
+  passage, document and page. An invalid number is drawn in red and listed.
+  Mapping the recorded text again gives the result the run saved (checked:
+  `matches_recorded`), because it is code.
+- **The refusal:** the strict rule, with whether the recorded answer is the
+  exact refusal, contains it and goes on (an answer), or neither.
+- **Change the answer:** an editable copy read by `answer_check` (POST
+  `/learn/answer-check`): citations against the passages that run showed, the
+  refusal rule, and `score_answer` by the key the run was scored with. Presets:
+  cite a passage that was not shown, add a fact before the refusal, refuse.
+- **How the model wrote it:** settings and the recorded timings (reading the
+  prompt, first word, writing rate).
+- **The same passages, other answer models:** every run on the same setup
+  (index, embedding, k, retrieval, prompt) with another answer model: ladder
+  row 10 question by question.
+
+## New answer models (M6, ladder row 10)
+
+| Model | Thinking off | Sets A+D | Set E | Answer, median | Peak memory |
+|---|---|---|---|---|---|
+| qwen3:1.7b (6d) | works | 22 · 1 · 2 | 7 · 0 · 1 | 17.2 s | - |
+| qwen3.5:4b | works (0 thinking characters) | 22 · 1 · 2 | 7 · 0 · 1 | 43.7 s | ~6.7 GB |
+| gemma4:e4b | works; system prompt verified by behaviour | **24 · 1 · 0** | **8 · 0 · 0** | 47.3 s | 8.0 GB |
+
+`think: false` is always sent (`llm.chat_stream`). On this CPU qwen3.5:4b
+reads a 1,339-token prompt at about 25 tokens/s and writes at 5.8;
+gemma4:e4b reads at about 32 and writes at 7.5, after a 29 s load. Details and
+what the Wrongs were: `docs/ladder.md`, row 10. The default answer model is
+the user's call; it stays qwen3:1.7b until then.

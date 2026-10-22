@@ -59,15 +59,16 @@ Present now (M4). Each RAG step has a doc in `docs/steps/`.
 | `trace.py` | The in-app trace: each finished step with its duration |
 | `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time; two passes when a reranker or rewrite is on: search every question, release the search models, then answer from the same passages), MRR and recall@20, Set E's follow-up chain, the ladder with variants, two-run comparison |
 | `library.py` | The PDFs, their titles, what the active index holds of each, and the page inspector's data |
-| `learn.py` | How it works: the chunk playground, the search lab (three lists side by side), the vector store's tables, versions and indexes, the exact-vs-ANN recall check on a scratch copy, the embedding lab (PCA map, Matryoshka cuts, mixed models), the search lab's reranked column, context lines (step 4) and rewriting replayed from runs or run live (step 8) |
+| `learn.py` | How it works: the chunk playground, the search lab (three lists side by side), the vector store's tables, versions and indexes, the exact-vs-ANN recall check on a scratch copy, the embedding lab (PCA map, Matryoshka cuts, mixed models), the search lab's reranked column, context lines (step 4) and rewriting replayed from runs or run live (step 8); M6: a recorded answer replayed from its run's own index build (steps 9 and 10: exact messages, budget, citations, an editable answer read by the same code), a run's scorecard taken apart with a Wilson interval and a sign test (step 12), and the guard on the crafted page and the real hidden-text pages, with a live v2/v3 demo through `answer.ask` (step 13) |
 | `health.py` | System Health: every check returns a status from one vocabulary and never raises |
 | `cli.py` | Terminal views behind `./rag`: health, ingest, index, llm, context, rerank, eval |
 
-Planned, each arriving with its milestone: `vision`, `judge`. Outside the
+Planned: `vision` (M7, figures as text). Cut from this version (2026-10-22,
+`docs/plans/m6-m8.md`): the `judge`, RAGAS/DeepEval and tracing export. Outside the
 package: `tools/colab/` (the gateway, the GPU worker and the start script, which
 run on the Colab runtime; docs/02-remote-gpu.md).
 
-## API surface (M5)
+## API surface (M6)
 
 | Endpoint | Returns |
 |---|---|
@@ -103,6 +104,13 @@ run on the Colab runtime; docs/02-remote-gpu.md).
 | `GET /api/learn/store?profile=` | A build's LanceDB table: columns, a sample row, versions, indexes, size, other builds, the last ANN check |
 | `POST /api/learn/store/ann-check?profile=` | Measure IVF_FLAT, IVF_PQ and IVF_HNSW_SQ against exact search on a scratch copy (recall@10, latency) |
 | `GET /api/learn/embed?profile=&q=&mix=` | The embedding lab: every passage as a 2-D point (PCA), a question's landing point and true nearest passages, Matryoshka cuts, and the question embedded by another index's model |
+| `GET /api/learn/answers?question=` | Steps 9 and 10 (M6): the runs that answered a test question, the app's defaults first; runs whose build was pruned are left out |
+| `GET /api/learn/prompt?run=&question=` | Step 9: the exact messages rebuilt from the run's own build, the budget, and v2/v3/v4 for the same passages with measured outcomes |
+| `GET /api/learn/cite?run=&question=` | Step 10: citations mapped to pages, the refusal rule, timings, the same passages answered by other answer models |
+| `POST /api/learn/answer-check` | Steps 10 and 12: `{run, question, text}` read by the citation, refusal and scoring code (changes nothing) |
+| `GET /api/learn/evaluate?run=&against=` | Step 12: a run's grid, facts with spans, reciprocal ranks, Set E chain, Wilson interval, sign test against another run |
+| `GET /api/learn/safety?source=&page=`, `…/pages`, `…/image?view=`, `…/flags?text=` | Step 13: a page through the guard (the crafted page or a real hidden-text page), its three images, the instruction check on any text |
+| `POST /api/learn/safety/live?version=v2\|v3` | Step 13, live: the crafted page answered now by the Answer role's model through `answer.ask` (one at a time) |
 
 Interactive schema: http://127.0.0.1:8775/api/_docs while the app is running.
 

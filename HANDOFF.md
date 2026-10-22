@@ -1,6 +1,6 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-22 ~19:20 IST, at the end of M5. A new session should read, in
+Updated 2026-10-22 ~22:40 IST, at the end of M6 (staged, not committed; M5 = 178c0d4). A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -12,10 +12,10 @@ questions.
   this file, report neatly with every number, and end with a suggested commit
   message. The user commits and pushes. (Repeated by the user during M2.)
 - Repo `~/Dev/RAG/rag-studio`; UI 127.0.0.1:**3100**, API 127.0.0.1:**8775**
-  (trading uses 3000/8765); Phoenix later on 6006.
+  (trading uses 3000/8765). Tracing (Phoenix) was cut.
 - Local model pulls approved, each when its milestone starts: qwen3-embedding:0.6b,
   EmbeddingGemma 2 (via sentence-transformers, see research §4), Qwen3-Reranker-0.6B
-  (HF), gemma4:e4b (M6). Docling's models are now downloaded (M2). qwen3.5:4b is already pulled.
+  (HF), gemma4:e4b (pulled in M6, 6.6 GB). Docling's models are now downloaded (M2). qwen3.5:4b is already pulled.
 - Git: PDFs and test questions are committed; indexes, runs and caches are rebuilt.
 - Check `ollama ps` and `systemctl --user status trading-daily.timer` (19:17 IST)
   before any pull or long run. Never stop the trading timers.
@@ -23,7 +23,58 @@ questions.
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
 
-## M5 status: complete (staged, not committed)
+## M6 status: complete (staged, not committed)
+
+**Built:** ladder row 10 (two local answer models, thinking off verified live), How it works 9, 10,
+12 and 13 interactive. Engine: `learn.py` (`recorded_answers`, `prompt_lab`, `cite_lab`,
+`answer_check`, `evaluate_lab`, `safety_lab`/`safety_pages`/`safety_image`/`flag_check`,
+`safety_live`, `write_crafted_pdf` shared with `tests/test_guard.py`), `eval.py` (`fact_spans`,
+`pass_interval` Wilson 95%, `sign_test` exact McNemar, `run_head`, each answer records
+`prompt: {chars, messages_sha256}`), `prompt.py` (`passage_entry`, `messages_sha256`), `answer.py`
+(`citation_marks`), `guard.py` (`visibility_views`, `_renders` shared with the decision),
+`config.MODEL_NOTES` for both models. API: `/api/learn/{answers, prompt, cite, answer-check,
+evaluate, safety, safety/pages, safety/image, safety/flags, safety/live}`. UI: `prompt-lab`,
+`cite-lab`, `evaluate-lab`, `safety-lab`, `recorded-picker`, `marked-answer`, `answer-try`; step
+copy in `lib/stages.ts`. Tools: `scripts/eval_watchdog.sh` (memory watchdog, measures
+`llama-server` RSS), `scripts/think_check.py`. Judge/RAGAS/tracing cut and said so everywhere.
+
+| Check | Result |
+|---|---|
+| Tests | `./rag test` **541 passed, 1 skipped** (531 at M5); `tests/test_colab_worker.py`'s log test was racy under load (the worker logs after replying) and now waits for the line |
+| UI | typecheck and lint clean; QA (`docs/qa/2026-10-22-m6-answer-models-how-it-works.md`): 4 pages at 390/768/1024/1440/1806 px no overflow, light + dark, console clean; findings M6-01..04 (01 P2 and 02 P1 fixed, 03-04 P3 open) |
+| Thinking off | qwen3.5:4b and gemma4:e4b: 0 thinking characters; gemma4's system prompt verified by behaviour |
+
+**Row 10** (Sets A+D Pass · Refused · Wrong, 6d + the 4B's cached scores, prompt v3; `docs/ladder.md`):
+
+| Row | Answer model | Run | A+D | Set E | Answer median | Peak RSS |
+|---|---|---|---|---|---|---|
+| 6d | qwen3:1.7b | `20261016-160533-549e` | 22·1·2 | 7·0·1 | 17.2 s | - |
+| 10a | qwen3.5:4b | `20261022-153229-8e7b` | 22·1·2 | 7·0·1 (`…155217-25e2`) | 43.7 s | ~6.7 GB |
+| **10b** | **gemma4:e4b** | `20261022-160852-1695` | **24·1·0** | **8·0·0** (`…163004-803a`) | 47.3 s | 8.0 GB |
+
+10b vs 6d: T4, T5 Wrong → Pass, nothing worse (sign test p = 0.5; with Set E 3/0, p = 0.25).
+10a = 6d question for question on A+D, but its Wrongs are refusals followed by an explanation where
+qwen3:1.7b invented facts. Injection inside a passage (crafted page, one call each): qwen3:1.7b gives
+the injected 99 with v2 and v3; qwen3.5:4b and gemma4:e4b keep to 42 with both.
+
+**Defaults are unchanged** (5d, prompt v3, dense, qwen3:1.7b, every switch off). **Waiting for the
+user:** which answer model becomes the default (candidate: gemma4:e4b, 24·1·0 but ~47 s and 8 GB;
+qwen3:1.7b stays the light option).
+
+**If `data/` is wiped:** the M2-M5 commands, then the row 10 scorecards (no Colab, the 4B scores must
+be cached first, see M5): `scripts/eval_watchdog.sh r10b --set a b d --prompt v3 --rerank qwen3-4b
+--profile docling-structure-embeddinggemma2 --model gemma4:e4b --ladder 10 --label "6d + gemma4:e4b
+answers (10b)"` (10a: `--model qwen3.5:4b`, label "(10a)"), and Set E with `--set e` and labels
+"Set E: follow-ups rewritten, Docling + 4B, <model>". Close VS Code/Vivaldi first for gemma4.
+
+## Next: M7 of the reduced plan
+
+`docs/plans/m6-m8.md` M7: figures as vision descriptions (Set C, row 11) + How it works 11, one Colab
+session. Note from M6: **gemma4:e4b lists `vision` among its capabilities** and runs here; the plan
+says a vision model on Colab (qwen3.5:4b vision or a gemma4 tag on the T4). Ask the user whether a
+local gemma4:e4b vision pass is acceptable (8 GB, slow) before planning a Colab session.
+
+## M5 status: complete (committed by the user as 178c0d4)
 
 **Built:** the reranker (`rerank.py`: Qwen3-Reranker 0.6B here, 0.6B/4B/8B-8bit on the Colab GPU
 worker, pinned revisions, scores cached), contextual retrieval (`context.py`: windows, prompt
@@ -65,7 +116,111 @@ then each row's retrieval-only run on Colab (fills the caches) and its scorecard
 `./rag eval --set a b d --prompt v3 --rerank qwen3-4b [--rewrite …] [--agent 3] --profile <p>
 --ladder N --label "<…>"` (run ids and labels in `docs/ladder.md`).
 
-## Next: M6 of the reduced plan (decided 2026-10-22)
+## M6 log (how it went; the status is above)
+
+### M6 progress (update after every phase): 2026-10-22 21:11 IST checkpoint
+
+**Read this first when resuming M6.** M5 is committed (178c0d4). Nothing staged yet for M6.
+
+- **Thinking off, verified live:** qwen3.5:4b with `think: false`: 0 thinking chars, no `<think>`
+  tag, 67 answer tokens on the FDsys question (prompt 1,339 tok in 54 s ≈ 25 tok/s, writing 5.8 tok/s,
+  ~65-77 s per answer, 3.4 GB resident at num_ctx 8192). **gemma4:e4b pulled** (6.6 GB, 7.5B, Q4_K_M,
+  capabilities include thinking **and vision**: a candidate for M7 locally); its thinking check is
+  NOT done yet (`.venv/bin/python scripts/think_check.py gemma4:e4b`: streams `/api/chat` with `think: false`, count
+  `message.thinking` chars and `<think>` in content, on a real v3 prompt). Disk: 41 GB free.
+- **21:22 Row 10a DONE:** `20261022-153229-8e7b` qwen3.5:4b **22·1·2**, recall 9/6/11 as 6d; **no
+  outcome changed vs 6d on any of the 25 scored questions**; answer median 43.7 s (28.7-87.4) vs
+  6d's 17.2 s (9.3-41.2), answer_seconds 1,162 vs 6d's; median 59 answer tokens. Its Wrongs T4, T5 are
+  refusals followed by an explanation ("I could not find this in the documents. The provided text
+  only contains…"): no invented fact, but not the exact refusal (strict rule, spec §5.7). D11
+  refused. Memory: llama-server RSS ~6.7 GB observed at 21:19 (the running watchdog matched
+  `ollama runner`, so its JSON says 0; fixed in `scripts/eval_watchdog.sh`), MemAvailable min 1,476 MB,
+  eval process peak 2,043 MB. Set E for qwen3.5:4b started 21:22.
+- **21:40:** Set E qwen3.5:4b `20261022-155217-25e2` **7·0·1** (= qwen3:1.7b's 7·0·1; E6 W→P, E7 P→W:
+  refusal + explanation again; all 3 of qwen3.5:4b's Wrongs are that habit), median 51 s/answer.
+  UI **typecheck + lint clean**; `./rag test` **541 passed, 1 skipped** (5 min 22 s).
+  **gemma4:e4b thinking off verified:** 0 thinking chars, no tag; FDsys answer right with [1, 3];
+  prompt 1,370 tok in 43.2 s (32 tok/s), writing 58 tok in 7.7 s (7.5 tok/s), load 28.9 s;
+  llama-server peak RSS **7,490 MB**, MemAvailable min 2,035 MB (from 9.8 GB, VS Code open, Vivaldi
+  closed). Template is `{{ .Prompt }}` with `RENDERER gemma4` + a DRAFT model (speculative,
+  draft_num_predict 3); **system prompt verified** (system "reply PINEAPPLE" → "PINEAPPLE").
+  Next: row 10b + Set E (asked the user to close VS Code first), browser QA, docs, ladder.
+- **22:08: ROW 10 MEASURED.** 10b `20261022-160852-1695` gemma4:e4b **24·1·0** (A 11·0·0, D 13·1·0;
+  recall 9/6/11, MRR 0.894 = 6d), only changes vs 6d and 10a: T4, T5 Wrong → Pass (exact refusals);
+  D11 still Refused. Median answer 47.3 s (29.4-101.6), answer_seconds 1,256, run 1,269 s; llama-server
+  peak **8,024 MB**, MemAvailable min 2,074 MB. Set E `20261022-163004-803a` **8·0·0** (rewrite_ok 6/8,
+  hits 7/7 with pages), median 60.1 s; E6 fixed vs qwen3:1.7b, E7 fixed vs qwen3.5:4b; runner peak
+  8,065 MB. Sign test 10b vs 6d on A+D: 2 better, 0 worse, p = 0.5 (a hint). **Next:** MODEL_NOTES
+  for gemma4, ladder.md row 10, docs/10 Measured, browser QA, stage, report, ask the user which answer
+  model becomes the default (defaults unchanged until then).
+- (was) **21:42: row 10b running** (started 21:38 with 11.3 GB available; Vivaldi/VS Code still open but
+  mostly swapped): run `20261022-160852-1695` "6d + gemma4:e4b answers (10b)", then Set E "Set E:
+  follow-ups rewritten, Docling + 4B, gemma4:e4b", both under `scripts/eval_watchdog.sh` (JSON in
+  `data/cache/eval-watch/r10b*.mem.json`). Rerun commands = the 10a ones with `--model gemma4:e4b`.
+  **Key 10a finding for the report:** 6d's T4/T5 Wrongs (qwen3:1.7b) invent facts (MacBook Air
+  question answered with the iMac's 346 kg; "2.8 percent for 2031"); 10a's T4/T5 Wrongs are refusals
+  followed by an explanation. Same scorecard, different safety. Docs done: 09, 10 (How it works part),
+  12, 13, 01-architecture (API M6 + learn.py), CLAUDE.md M6 gotchas, trace.py/settings "judge" wording.
+- **21:27: all M6 UI written (typechecked/linted 21:35; NOT browser-tested):** `lib/api.ts` M6 types +
+  `api.answerCheck`/`api.safetyLive`; `components/learn/recorded-picker.tsx` (hook `useRecordedAnswer`),
+  `marked-answer.tsx`, `answer-try.tsx`, `prompt-lab.tsx`, `cite-lab.tsx`, `evaluate-lab.tsx`,
+  `safety-lab.tsx`; WIDGETS in `app/learn/[slug]/page.tsx` (prompt, generate, evaluate, safety);
+  `explain` triplets in `lib/stages.ts`. API: `/api/learn/{answers,prompt,cite,answer-check,evaluate,
+  safety,safety/pages,safety/image,safety/flags,safety/live}`. Tests: `tests/test_learn_answer.py`
+  (new, not run yet) and `tests/test_guard.py` now builds the PDF with `learn.write_crafted_pdf`.
+  Set E for qwen3.5:4b: run `20261022-155217-25e2` (4/8 at 21:26, 4 Pass, rewrite_ok 6/8, hits 7).
+  **Next:** after Set E: `cd web/ui && npx tsc --noEmit && npm run lint`, `./rag test`, gemma4 thinking
+  check, ask the user to close VS Code/Vivaldi, row 10b + Set E with `scripts/eval_watchdog.sh`,
+  browser QA of /learn/{prompt,generate,evaluate,safety}, docs 09/10/12/13, ladder row 10, MODEL_NOTES.
+- (was) **Row 10a running** (background, dies with the session): run `20261022-153229-8e7b`
+  "6d + qwen3.5:4b answers (10a)" (17/31 at 21:11), then Set E "Set E: follow-ups rewritten, Docling +
+  4B, qwen3.5:4b". If either is missing or `interrupted`, rerun exactly (no Colab needed; all 4B scores
+  and rewrites are cached):
+  `./rag eval --set a b d --prompt v3 --rerank qwen3-4b --profile docling-structure-embeddinggemma2 --model qwen3.5:4b --ladder 10 --label "6d + qwen3.5:4b answers (10a)"`
+  and `./rag eval --set e --prompt v3 --rerank qwen3-4b --profile docling-structure-embeddinggemma2 --model qwen3.5:4b --label "Set E: follow-ups rewritten, Docling + 4B, qwen3.5:4b"`.
+  Then the same two with `--model gemma4:e4b`, label "(10b)". Compare against 6d `20261016-160533-549e`
+  (22·1·2, qwen3:1.7b) and Set E `20261022-092055-d263` (7·0·1). Report Pass·Refused·Wrong, seconds
+  per answer (`summary.answer_seconds` / scored), peak memory (watchdog JSON).
+  Memory watchdog: `scripts/eval_watchdog.sh <name> <eval args>` (output in `data/cache/eval-watch/`) runs `./rag eval` in the background, samples MemAvailable and
+  the RSS of `ollama runner` + the eval every 3 s, SIGINTs the eval below 800 MB, writes min/peak
+  to a JSON. gemma4:e4b likely needs ~7+ GB: check `free -m` and ask the user to close VS Code /
+  Vivaldi first (8.2 GB available with both open at 21:00).
+- **Engine edits done (unstaged, untested):** `prompt.messages_sha256()` and `prompt.passage_entry()`
+  (context_block uses it); `eval.py`: docstring (judge cut), `fact_spans()`, `pass_interval()` (Wilson
+  95%), `sign_test()` (exact two-sided McNemar), `run_head()` (was `_run_head`), and `_answer_one`
+  now records `res["prompt"] = {chars, messages_sha256}` per answer; `answer.citation_marks(text, k)`;
+  `guard.py`: `_renders()` split out of `_visibility()`, `visibility_views()` (page / text removed /
+  changed pixels as PNGs at the guard's 96 dpi and threshold 16), `_png()`.
+- **21:30: the `learn.py` block below is WRITTEN and smoke-tested on real runs** (prompt_lab on 6d A1:
+  1,502 tokens measured, 4.08 chars/token; 6d vs 5d: 2 better, 0 worse, sign test p = 0.5; T3 v2 Wrong
+  → v3 Pass on 3 setups; crafted page: all 5 tricks found, 3 spans kept). Not yet run: `_safety_pages()`
+  (the guard.py edit changed the cleaning cache key, so it re-cleans all PDFs once, ~30 s+; do it
+  after the scorecards), `safety_live`. **Next: API routes, then the UI labs, tests, docs.**
+- Design of that block (as built):
+  `_done_answer_runs()` (full done answer runs, memoised by run-file mtimes), `recorded_answers(qid)`
+  (picker: runs that answered it, default setup first, ladder next; skip runs whose LanceDB table is
+  gone), `_recorded(run, qid)` (rebuild sources from the run's own table via `store.get_passage` by the
+  recorded `hits` chunk ids, refuse if the prompt sha changed or the table is gone; `exact` =
+  identical / rebuilt / differs via `messages_sha256`), `_setup_key(cfg, prompt=, model=)` to find
+  the same passages answered with another prompt version or answer model;
+  `prompt_lab` (messages, parts + budget bar split by chars of the real `prompt_tokens`, v2/v3/v4
+  side by side with changed lines and measured outcomes), `cite_lab` + `answer_check(run, qid, text)`
+  (POST; citations, marks, strict refusal, score + fact spans: the user edits the answer),
+  `evaluate_lab(run, against)` (Hit/Miss/no-pages × outcome grid, facts with spans, MRR/recall@20 per
+  question, Set E chain, Wilson interval, paired sign test via `evaluation.compare`; the two
+  2026-10-14 baseline Set D runs gave word-for-word identical D3 answers: temperature 0 repeats, the
+  key changed), `safety_lab(source, page)` (crafted page from a shared `write_crafted_pdf()` that
+  `tests/test_guard.py`'s fixture will also use, cached in `data/cache/learn/`; real hidden-text pages
+  from `library.clean_doc(..., "pymupdf").pages[].hidden`; images via `guard.visibility_views`;
+  flags; v2 vs v3 fence on the crafted passage; T3 measured v2 vs v3), `flag_check(text)`, and
+  `safety_live(version)` through the real `answer.ask` with a `retrieve.Found` holding the crafted
+  passage and a stand-in object with `index_info()`. Then API routes `/api/learn/{answers,prompt,cite,
+  answer-check,evaluate,safety,safety/image,safety/flags,safety/live}`, UI labs
+  (`prompt-lab.tsx`, `cite-lab.tsx`, `evaluate-lab.tsx`, `safety-lab.tsx`, WIDGETS in
+  `learn/[slug]/page.tsx`, `explain` triplets in `lib/stages.ts`), tests, docs 09/10/12/13,
+  `config.MODEL_NOTES` for the new models, QA doc, ladder row 10.
+
+### The M6 scope as decided (2026-10-22)
 
 **Read `docs/plans/m6-m8.md` first: it is the scope now and wins over the spec.** The user's
 answers (2026-10-22, don't re-ask): defaults stay as they are (all M5 switches off); the
