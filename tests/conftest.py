@@ -42,6 +42,14 @@ def _st_ready() -> bool:
             and free >= profiles.BUILD_RAM_GB[profiles.EMBEDDINGGEMMA2.model])
 
 
+def _rerank_ready() -> bool:
+    """The reranker snapshot is on disk and loading it cannot push this laptop into swap."""
+    from rag_studio import ingest, rerank
+    free = ingest.available_ram_gb()
+    return (rerank.snapshot(rerank.RERANKERS["qwen3-0.6b"]) is not None and free is not None
+            and free >= rerank.RERANK_LOAD_GB)
+
+
 def pytest_collection_modifyitems(config, items):
     if any("ollama" in item.keywords for item in items) and not _ollama_up():
         skip = pytest.mark.skip(reason=f"Ollama is not reachable at {OLLAMA_URL}")
@@ -52,6 +60,11 @@ def pytest_collection_modifyitems(config, items):
         skip = pytest.mark.skip(reason="EmbeddingGemma 2 is not downloaded, or under 3.2 GB of memory is free")
         for item in items:
             if "st" in item.keywords:
+                item.add_marker(skip)
+    if any("rerank" in item.keywords for item in items) and not _rerank_ready():
+        skip = pytest.mark.skip(reason="The reranker is not downloaded, or too little memory is free")
+        for item in items:
+            if "rerank" in item.keywords:
                 item.add_marker(skip)
     if any("colab" in item.keywords for item in items) and not _colab_up():
         skip = pytest.mark.skip(reason="No Colab runtime is connected (./rag llm connect)")
@@ -97,7 +110,7 @@ def tmp_data(tmp_path, monkeypatch):
     directory. The PDFs and test questions stay the real, committed ones."""
     from rag_studio import paths, retrieve
 
-    for name in ("LANCEDB", "INDEXES", "RUNS", "CACHE", "CHAT"):
+    for name in ("LANCEDB", "INDEXES", "RUNS", "CACHE", "CHAT", "CONTEXT"):
         monkeypatch.setattr(paths, name, tmp_path / name.lower())
     monkeypatch.setattr(retrieve, "_cache", {})
     return tmp_path

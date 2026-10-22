@@ -18,6 +18,7 @@ INDEXES = DATA / "indexes"    # rebuilt: each profile's active-build pointer and
 CACHE = DATA / "cache"        # rebuilt: parsed pages, context lines, figure descriptions
 RUNS = DATA / "runs"          # rebuilt: evaluation runs
 CHAT = DATA / "chat"          # conversations, one JSON file each
+CONTEXT = DATA / "context"    # exported context lines, one JSONL file per profile (hours of GPU time; may be committed)
 UPLOADS = DATA / "uploads"    # PDFs added through the browser
 
 # Session state that must never be committed (the Colab token, the connected

@@ -108,13 +108,70 @@ def role_rows(snap: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for role in ROLES:
         row = {"role": role.key, "label": role.label, "purpose": role.purpose,
-               "model": role.model, "runs_on": role.runs_on, "arrives": role.arrives,
+               "model": role.model, "runs_on": role.runs_on, "arrives": role.arrives, "where": role.where,
                "installed": None, "loaded": None}
-        if role.model and role.runs_on == "ollama" and snap["up"]:
+        if role.where == "remote":
+            # Checked against what the connected runtime serves, never against the local Ollama,
+            # and never with a `ollama pull` suggestion: it does not run here.
+            from rag_studio import remote
+            conn = remote.connection()
+            row["connected"] = bool(conn["connected"])
+            row["installed"] = (any(same_model(role.model, m) for m in conn.get("models") or [])
+                                if conn["connected"] and role.model else None)
+        elif role.model and role.runs_on == "ollama" and snap["up"]:
             row["installed"] = any(same_model(role.model, n) for n in installed)
             row["loaded"] = any(same_model(role.model, n) for n in resident)
+        elif role.runs_on == "python":
+            # Runs inside this app (sentence-transformers): "installed" is downloaded at the
+            # pinned revision, "loaded" is held in this process. Never a download or a load here.
+            row["installed"], row["loaded"] = _python_model_state(role.key)
         rows.append(row)
     return rows
+
+
+def _python_model_state(role_key: str) -> tuple[bool | None, bool | None]:
+    try:
+        if role_key == "embed":
+            from rag_studio.embed import STModel, st_snapshot
+            spec = profiles.get(profiles.DEFAULT).embedding
+            return st_snapshot(spec) is not None, STModel.is_loaded(spec)
+        if role_key == "rerank":
+            from rag_studio import rerank
+            from rag_studio.config import role_model
+            spec = next(s for s in rerank.RERANKERS.values() if s.where == "local" and s.model == role_model("rerank"))
+            return rerank.snapshot(spec) is not None, rerank.LocalReranker.is_loaded(spec)
+    except (ImportError, KeyError, OSError):
+        pass
+    return None, None
+
+
+def technique_defaults() -> list[dict[str, Any]]:
+    """What Ask and an evaluation use unless told otherwise (spec §9.6), read
+    from the engine's own defaults. Every technique is a switch; the scorecard
+    decides which are on, and the user changes a default, not this list."""
+    from rag_studio import answer, prompt, retrieve
+    d = retrieve.DENSE
+    off = "Off"
+    return [
+        {"key": "index", "label": "Index", "value": profiles.get(profiles.DEFAULT).label, "id": profiles.DEFAULT},
+        {"key": "prompt", "label": "Prompt version", "value": prompt.DEFAULT_VERSION},
+        {"key": "search", "label": "Search", "value": d.label},
+        {"key": "k", "label": "Passages per answer", "value": str(answer.DEFAULT_K)},
+        {"key": "section_cap", "label": "Limit per section", "value": off if d.section_cap is None else str(d.section_cap)},
+        {"key": "rerank", "label": "Reranker", "value": off if d.rerank is None else d.rerank},
+        {"key": "rewrite", "label": "Query rewriting", "value": off if d.rewrite is None else d.rewrite},
+        {"key": "agent", "label": "Multi-step search", "value": off if d.agent_rounds is None else f"{d.agent_rounds} rounds"},
+        {"key": "context", "label": "Context lines", "value": "In the index" if profiles.get(profiles.DEFAULT).contextual else off},
+    ]
+
+
+def _our_models() -> set[str]:
+    """The models this app itself loads into the local Ollama: local roles and the indexes' embedders.
+    Remote roles are not here: they run on the Colab runtime."""
+    from rag_studio.config import ollama_roles
+    mine = {r.model for r in ollama_roles()}
+    mine |= {p.embedding.model for p in profiles.PROFILES.values() if p.embedding.backend == "ollama"}
+    return mine
 
 
 def _ai_checks(snap: dict[str, Any], roles: list[dict[str, Any]]) -> list[Check]:
@@ -128,7 +185,8 @@ def _ai_checks(snap: dict[str, Any], roles: list[dict[str, Any]]) -> list[Check]
                     technical={"Endpoint": snap["host"], "Version": snap["version"],
                                "Installed models": len(snap["installed"])})]
 
-    missing = [r for r in roles if r["installed"] is False]
+    local = [r for r in roles if r.get("where", "local") == "local"]
+    missing = [r for r in local if r["installed"] is False]
     if missing:
         names = ", ".join(sorted({r["model"] for r in missing}))
         checks.append(Check(
@@ -137,11 +195,11 @@ def _ai_checks(snap: dict[str, Any], roles: list[dict[str, Any]]) -> list[Check]
             fix=" && ".join(f"ollama pull {m}" for m in sorted({r['model'] for r in missing})),
         ))
     else:
-        ready = [r for r in roles if r["installed"]]
+        ready = [r for r in local if r["installed"]]
         checks.append(Check("roles", "healthy", "Models per role",
                             f"All {len(ready)} active roles have their model installed."))
 
-    ours = {r["model"] for r in roles if r["model"]}
+    ours = _our_models()
     resident = snap["resident"]
     foreign = [m for m in resident if not any(same_model(m["name"], o) for o in ours)]
     if foreign:
@@ -211,7 +269,7 @@ def _index_check(profile_id: str) -> Check:
     if manifest is None:
         return Check("indexes", "info", "Indexes",
                      "No search index yet. Build one to start asking questions.",
-                     fix="./rag ingest")
+                     fix=profiles.build_command(profile_id))
     tech = {"Profile": manifest["profile"], "Table": manifest["table"],
             "Built": manifest["built_at"], "Embedding": manifest["embedding"]["model"]}
     try:
@@ -219,11 +277,11 @@ def _index_check(profile_id: str) -> Check:
     except Exception as e:  # noqa: BLE001 - any failure to open is the finding
         return Check("indexes", "needs_attention", "Indexes",
                      "The search index could not be opened. Rebuild it.",
-                     fix="./rag ingest --force", technical=tech | {"Error": type(e).__name__})
+                     fix=profiles.build_command(profile_id) + " --force", technical=tech | {"Error": type(e).__name__})
     if rows != manifest["rows"]:
         return Check("indexes", "needs_attention", "Indexes",
                      f"The search index holds {rows:,} passages but should hold {manifest['rows']:,}. Rebuild it.",
-                     fix="./rag ingest --force", technical=tech)
+                     fix=profiles.build_command(profile_id) + " --force", technical=tech)
     docs = len(manifest["documents"])
     return Check("indexes", "healthy", "Indexes",
                  f"{manifest['label']} index: {rows:,} passages from {_plural(docs, 'document')}.",
@@ -251,6 +309,12 @@ def _remote_checks() -> list[Check]:
     tech |= {"Ollama": info["ollama_version"], "Latency": f"{info['latency_ms']} ms",
              "GPU": ", ".join(f"{g['name']} ({g['memory_used_mb']:,} / {g['memory_total_mb']:,} MB)" for g in gpus) or "none",
              "Models": ", ".join(m["name"] for m in info["models"]) or "none"}
+    worker = info.get("worker")
+    if worker:
+        tech["Worker"] = (f"serves {', '.join(worker.get('served') or []) or 'no reranker'}"
+                          f"{' and context lines' if worker.get('context') else ''}; "
+                          f"loaded {worker.get('loaded') or 'nothing'}"
+                          + (f", peak {worker['vram']['peak_mb']:,} MB" if (worker.get("vram") or {}).get("peak_mb") else ""))
     on_cpu = [m["name"] for m in info["loaded"] if not m["on_gpu"]]
     if not gpus:
         return [Check("colab", "warning", "Colab runtime",
@@ -292,6 +356,7 @@ def report() -> dict[str, Any]:
         "sections": [asdict(s) for s in sections],
         "ollama": snap,
         "roles": roles,
+        "defaults": technique_defaults(),
         "documents": documents(),
         "app": {"version": __version__, "python": sys.version.split()[0],
                 "platform": platform.platform(terse=True), "ollama_url": OLLAMA_URL},
@@ -302,11 +367,15 @@ def status() -> dict[str, Any]:
     """The small version the sidebar polls: is the AI up, and which model answers."""
     snap = ollama_snapshot()
     answer = next(r for r in role_rows(snap) if r["role"] == "answer")
-    ours = {r.model for r in ROLES if r.model}
+    ours = _our_models()
     busy = [m["name"] for m in snap["resident"]
             if not any(same_model(m["name"], o) for o in ours)]
     manifest = store.active_manifest(profiles.DEFAULT)
-    from rag_studio import remote
+    from rag_studio import embed, ingest, remote
+    # Asking loads the default index's embedder in this process the first time.
+    spec = profiles.get(profiles.DEFAULT).embedding
+    need = embed.ST_LOAD_GB if spec.backend == embed.ST and not embed.STModel.is_loaded(spec) else None
+    free = ingest.available_ram_gb()
     conn = remote.connection()
     return {
         "remote": {"connected": conn["connected"], "host": conn.get("host"),
@@ -315,6 +384,12 @@ def status() -> dict[str, Any]:
                "answer_model_installed": answer["installed"], "busy_with": busy,
                "error": snap["error"]},
         "documents": len(library.pdf_files()),
+        "default_profile": profiles.DEFAULT,
+        "build_command": profiles.build_command(profiles.DEFAULT),
+        # Memory the first question needs and what is free now; Ask explains a
+        # shortfall instead of failing on the first question.
+        "memory": {"needed_gb": need, "free_gb": round(free, 1) if free is not None else None,
+                   "short": bool(need and free is not None and free < need)},
         "indexed": manifest is not None,
         "index": ({"profile": manifest["profile"], "label": manifest["label"],
                    "rows": manifest["rows"], "built_at": manifest["built_at"]}

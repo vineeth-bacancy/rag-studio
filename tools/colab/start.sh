@@ -12,6 +12,8 @@
 #
 #   bash start.sh                                   start everything (default)
 #   bash start.sh --models "qwen3-embedding:8b"     serve other models
+#   bash start.sh --models "" --worker qwen3-4b     a rerank-only runtime: no Ollama at all
+#   bash start.sh --worker qwen3-0.6b-gpu,qwen3-4b  also run the worker (worker.py), these rerankers
 #   bash start.sh status                            is it up, and on what URL
 #   bash start.sh code                              the connect code again, no restart
 #   bash start.sh logs                              the last lines of every log
@@ -28,7 +30,13 @@
 # =============================================================================
 set -uo pipefail
 
-MODELS="${MODELS:-qwen3-embedding:8b qwen3-embedding:0.6b}"
+MODELS="${MODELS-qwen3-embedding:8b qwen3-embedding:0.6b}"
+# Rerankers the worker downloads and serves (comma-separated ids from worker.py; the first is loaded).
+WORKER="${WORKER:-}"
+WORKER_PORT="${WORKER_PORT:-8001}"
+# The laptop's library versions, so the worker computes with the same code:
+# "sentence-transformers==X transformers==Y". Empty means whatever pip picks.
+PINS="${PINS:-}"
 PORT="${PORT:-8000}"
 WORK="${WORK:-$(pwd)}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,6 +47,7 @@ OLLAMA_PIN="${OLLAMA_PIN:-}"
 
 OLLAMA_LOG="$WORK/ollama.log"
 GATEWAY_LOG="$WORK/gateway.log"
+WORKER_LOG="$WORK/worker.log"
 TUNNEL_LOG="$WORK/cloudflared.log"
 INSTALL_LOG="$WORK/install.log"
 TOKEN_FILE="$WORK/.rag_token"
@@ -55,6 +64,15 @@ good() { printf "\033[32m     %s\033[0m\n" "$*"; }
 die()  { printf "\033[31mFATAL: %s\033[0m\n" "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+daemon() {
+    # Start a long-running service in its OWN session. The notebook's stop
+    # button interrupts the cell's whole process group; a service in that group
+    # dies with it (nohup only ignores hang-ups, not interrupts). A service in
+    # its own session survives the stop, which is what lets a keep-alive cell
+    # be stopped without taking the runtime down. Falls back to nohup.
+    if have setsid; then setsid nohup "$@"; else nohup "$@"; fi
+}
 
 
 # --- helpers, each testable on its own (tests/test_colab_start.py) ------------------
@@ -281,6 +299,7 @@ stop_all() {
     say "Stopping"
     pkill -f cloudflared 2>/dev/null && dim "  stopped cloudflared"
     pkill -f "$HERE/server.py" 2>/dev/null && dim "  stopped the gateway"
+    pkill -f "$HERE/worker.py" 2>/dev/null && dim "  stopped the worker"
     pkill -f "ollama serve" 2>/dev/null && dim "  stopped ollama"
     rm -f "$URL_FILE"
     dim "  the token in $TOKEN_FILE is kept; delete it to make a new one"
@@ -299,6 +318,8 @@ while (( $# )); do
     case "$1" in
         start|stop|status|logs|code) cmd="$1"; shift ;;
         --models) MODELS="$2"; shift 2 ;;
+        --worker) WORKER="$2"; shift 2 ;;
+        --pins)   PINS="$2";   shift 2 ;;
         --port)   PORT="$2";   shift 2 ;;
         --ollama-version) OLLAMA_PIN="$2"; shift 2 ;;
         --help|-h)
@@ -323,11 +344,21 @@ case "$cmd" in
             printf 'notebook that started this runtime, or run this in a terminal.\n'
         fi
         exit 0 ;;
-    logs) tail -n 40 "$OLLAMA_LOG" "$GATEWAY_LOG" "$TUNNEL_LOG" 2>/dev/null; exit 0 ;;
+    logs) tail -n 40 "$OLLAMA_LOG" "$WORKER_LOG" "$GATEWAY_LOG" "$TUNNEL_LOG" 2>/dev/null; exit 0 ;;
     status)
         say "Status"
         pgrep -f "ollama serve"     >/dev/null && dim "  ollama      running" || dim "  ollama      STOPPED"
         pgrep -f "$HERE/server.py"  >/dev/null && dim "  gateway     running" || dim "  gateway     STOPPED"
+        if [[ -n "$WORKER" ]]; then
+            pgrep -f "$HERE/worker.py" >/dev/null && dim "  worker      running" || dim "  worker      STOPPED"
+            curl -s --max-time 5 "http://127.0.0.1:$WORKER_PORT/worker" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print("  worker      loaded:", d.get("loaded"), "| serves:", ", ".join(d.get("served") or []), "| vram:", d.get("vram"))
+except Exception:
+    print("  worker      not answering")' 2>/dev/null
+        fi
         pgrep -f "cloudflared"      >/dev/null && dim "  cloudflared running" || dim "  cloudflared STOPPED"
         for M in $MODELS; do
             RES="$(gpu_residency "$M")"
@@ -341,7 +372,7 @@ case "$cmd" in
         done
         if [[ -f "$URL_FILE" ]]; then
             URL="$(cat "$URL_FILE")"
-            dim "  endpoint    $URL  (unauthenticated probe: $(http_code "$URL/api/tags"))"
+            dim "  endpoint    $URL  (unauthenticated probe: $(http_code "$URL/api/tags" ))"
         fi
         curl -s --max-time 5 "http://127.0.0.1:$PORT/healthz" && echo
         exit 0 ;;
@@ -372,6 +403,14 @@ fi
 have curl || die "curl is missing, and nothing here works without it"
 
 # --- 3. ollama ---------------------------------------------------------------------------
+# Skipped with --models "": a rerank-only runtime needs no Ollama, and not
+# installing, starting and loading one saves minutes and GPU memory.
+if [[ -z "${MODELS// /}" ]]; then
+    say "3/7  Model server"
+    dim "     no Ollama models asked for: skipped"
+    SKIP_OLLAMA=1
+else
+SKIP_OLLAMA=0
 say "3/7  Model server"
 if have ollama && [[ -n "$OLLAMA_PIN" ]] && ! ollama -v 2>/dev/null | grep -q "$OLLAMA_PIN"; then
     dim "     the installed Ollama is not $OLLAMA_PIN; reinstalling that version"
@@ -394,7 +433,9 @@ if ! pgrep -f "ollama serve" >/dev/null; then
     # Loopback only: the gateway is the only thing that may reach it. Models
     # stay loaded for 30 minutes, so the gaps between an index build's
     # batches, or an evaluation's questions, never pay a reload.
-    OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=30m nohup ollama serve >"$OLLAMA_LOG" 2>&1 &
+    # One request at a time per model: more slots multiply the KV cache and
+    # break the ordered prefix reuse that context lines and rewrites rely on.
+    OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=30m OLLAMA_NUM_PARALLEL=1 daemon ollama serve >"$OLLAMA_LOG" 2>&1 &
 fi
 wait_for_http "$OLLAMA_URL/api/version" 60 200 >/dev/null
 ollama_up || die "Ollama did not come up. See $OLLAMA_LOG"
@@ -426,6 +467,62 @@ for M in $MODELS; do
     fi
 done
 
+fi   # models asked for
+
+# --- 4b. the worker ---------------------------------------------------------------------
+if [[ -n "$WORKER" ]]; then
+    say "4b   Worker: $WORKER"
+    [[ -f "$HERE/worker.py" ]] || die "worker.py is not next to this script ($HERE)"
+    # "context" is a job, not a reranker: it turns on POST /context (through the local Ollama).
+    CONTEXT_FLAG=(); RERANKERS="$WORKER"
+    if [[ ",$WORKER," == *",context,"* ]]; then
+        CONTEXT_FLAG=(--context)
+        RERANKERS="$(printf '%s' "$WORKER" | tr ',' '\n' | grep -vx context | paste -sd, -)"
+        (( SKIP_OLLAMA )) && die "the context job needs Ollama with qwen3:8b: start with --models qwen3:8b"
+    fi
+    if [[ -n "$RERANKERS" ]]; then
+    dim "     installing pinned libraries (${PINS:-unpinned}) ..."
+    NEEDS_BNB=""; [[ "$RERANKERS" == *8b* ]] && NEEDS_BNB="bitsandbytes"
+    # shellcheck disable=SC2086
+    python3 -m pip install -q $PINS accelerate $NEEDS_BNB >>"$INSTALL_LOG" 2>&1 \
+        || { tail -n 15 "$INSTALL_LOG" >&2; die "could not install the worker's libraries. See $INSTALL_LOG"; }
+    python3 -c 'import torch, sentence_transformers as s; print("     torch", torch.__version__, "| sentence-transformers", s.__version__, "| cuda", torch.cuda.is_available())' \
+        || die "torch or sentence-transformers cannot be imported after the install"
+    fi
+    pkill -f "$HERE/worker.py" 2>/dev/null
+    WORKER_PORT="$WORKER_PORT" daemon python3 "$HERE/worker.py" --port "$WORKER_PORT" --models "$RERANKERS" ${CONTEXT_FLAG[@]+"${CONTEXT_FLAG[@]}"} >"$WORKER_LOG" 2>&1 &
+    dim "     downloading and loading the weights (minutes the first time; the log is $WORKER_LOG) ..."
+    WCODE="$(wait_for_http "http://127.0.0.1:$WORKER_PORT/worker" 1800 200)"
+    [[ "$WCODE" == "200" ]] || { tail -n 20 "$WORKER_LOG" >&2; die "the worker did not come up (HTTP $WCODE). See $WORKER_LOG"; }
+    # A real request on loopback: two documents, and the answer must rank the
+    # relevant one first. A worker that loads but cannot score fails here.
+    FIRST="${RERANKERS%%,*}"
+    if [[ -z "$FIRST" ]]; then
+        PROBE="ok context-only (no reranker to probe)"
+    else
+    PROBE="$(python3 - "$FIRST" "$WORKER_PORT" <<'PY'
+import json, sys, urllib.request
+model, port = sys.argv[1], sys.argv[2]
+body = {"model": model, "instruction": "Given a question about reports, retrieve the passage that states the answer",
+        "query": "What is the capital of France?",
+        "documents": ["Paris is the capital and largest city of France.", "Bananas are rich in potassium."]}
+req = urllib.request.Request(f"http://127.0.0.1:{port}/rerank", data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json"})
+try:
+    out = json.load(urllib.request.urlopen(req, timeout=120))
+    s = out["scores"]
+    print("ok" if s[0] > s[1] else "wrong-order", f"{out['compute_ms']:.0f}ms", f"peak {out['max_memory_mb']}MB")
+except Exception as e:
+    print("failed", type(e).__name__)
+PY
+)"
+    fi
+    case "$PROBE" in
+        ok*) good "worker scored a real request on loopback: $PROBE" ;;
+        *)   tail -n 20 "$WORKER_LOG" >&2; die "the worker's loopback check said: $PROBE" ;;
+    esac
+fi
+
 # --- 5. the token ------------------------------------------------------------------------
 say "5/7  Token"
 TOKEN_SOURCE="generated"
@@ -453,16 +550,18 @@ fi
 say "6/7  Gateway"
 [[ -f "$HERE/server.py" ]] || die "server.py is not next to this script ($HERE)"
 pkill -f "$HERE/server.py" 2>/dev/null
-RAG_STUDIO_TOKEN="$TOKEN" nohup python3 "$HERE/server.py" \
-    --port "$PORT" --wait-for-ollama 60 >"$GATEWAY_LOG" 2>&1 &
+WAIT_OLLAMA=(--wait-for-ollama 60); (( SKIP_OLLAMA )) && WAIT_OLLAMA=()
+RAG_STUDIO_TOKEN="$TOKEN" WORKER_URL="http://127.0.0.1:$WORKER_PORT" daemon python3 "$HERE/server.py" \
+    --port "$PORT" "${WAIT_OLLAMA[@]}" >"$GATEWAY_LOG" 2>&1 &
 wait_for_http "http://127.0.0.1:$PORT/healthz" 45 200 >/dev/null
 [[ "$(http_code "http://127.0.0.1:$PORT/healthz")" == "200" ]] \
     || { tail -n 15 "$GATEWAY_LOG" >&2; die "the gateway did not come up. See $GATEWAY_LOG"; }
 
 # Prove the lock HERE, on loopback, before any tunnel exists: if it fails the
 # tunnel is never opened, so a broken lock can never be exposed.
-LOCAL_UNAUTH="$(http_code "http://127.0.0.1:$PORT/api/tags")"
-LOCAL_AUTH="$(http_code "http://127.0.0.1:$PORT/api/tags" -H "Authorization: Bearer $TOKEN")"
+LOCK_PATH="/api/tags"; (( SKIP_OLLAMA )) && LOCK_PATH="/worker"
+LOCAL_UNAUTH="$(http_code "http://127.0.0.1:$PORT$LOCK_PATH")"
+LOCAL_AUTH="$(http_code "http://127.0.0.1:$PORT$LOCK_PATH" -H "Authorization: Bearer $TOKEN")"
 [[ "$LOCAL_UNAUTH" == "401" ]] \
     || die "the gateway answered a request without a token with $LOCAL_UNAUTH, not 401. Refusing to expose it."
 [[ "$LOCAL_AUTH" == "200" ]] \
@@ -482,7 +581,7 @@ if ! have cloudflared; then
 fi
 pkill -f cloudflared 2>/dev/null
 rm -f "$TUNNEL_LOG"
-nohup cloudflared tunnel --no-autoupdate --url "http://localhost:$PORT" >"$TUNNEL_LOG" 2>&1 &
+daemon cloudflared tunnel --no-autoupdate --url "http://localhost:$PORT" >"$TUNNEL_LOG" 2>&1 &
 
 URL=""
 for _ in $(seq 1 40); do
@@ -497,7 +596,7 @@ printf '%s' "$URL" > "$URL_FILE"
 # the lock reaches the public address before printing it. cloudflared prints
 # the name before DNS carries it, so wait for a real answer, then judge it.
 dim "     waiting for Cloudflare to route $URL ..."
-CODE="$(wait_for_http "$URL/api/tags" 120 401 403)"
+CODE="$(wait_for_http "$URL$LOCK_PATH" 120 401 403)"
 VERDICT="$(tunnel_verdict "$CODE")"
 case "$VERDICT" in
     locked)
@@ -522,4 +621,5 @@ case "$VERDICT" in
         dim "     something else. Run the cell again if it persists." ;;
 esac
 
+[[ -n "$WORKER" ]] && dim "Worker (rerankers served): $WORKER"
 handoff_banner "$URL" "$TOKEN" "$MODELS" "$TOKEN_SOURCE"

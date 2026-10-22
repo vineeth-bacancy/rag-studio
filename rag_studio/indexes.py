@@ -105,7 +105,7 @@ def overview() -> dict[str, Any]:
                             "made with. Rebuild it.")
         out.append({
             "id": p.id, "label": p.label, "description": p.description, "parser": p.parser,
-            "chunker": p.chunker.method, "labels": p.chunker.labels,
+            "chunker": p.chunker.method, "labels": p.chunker.labels, "contextual": p.contextual,
             "word_index": bool(m and m.get("word_index")),
             "active": m, "builds": len(store.builds(p.id)),
             "history": [{"table": b["table"], "built_at": b["built_at"], "rows": b["rows"],
@@ -121,7 +121,7 @@ def overview() -> dict[str, Any]:
             "check": embed.last_match(p.id),
         })
     free = ingest.available_ram_gb()
-    return {"profiles": out, "search_methods": SEARCH_METHODS,
+    return {"profiles": out, "search_methods": SEARCH_METHODS, "default_profile": profiles.DEFAULT,
             "remote": {k: conn.get(k) for k in ("connected", "host", "models", "connected_at")},
             "free_ram_gb": round(free, 1) if free is not None else None,
             "active_build": ingest.active_build()}

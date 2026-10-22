@@ -58,4 +58,5 @@ markers = [
     "ollama: needs a reachable local Ollama",
     "colab: needs a connected Colab runtime",
     "st: needs a downloaded sentence-transformers model and about 3 GB of free memory",
+    "rerank: needs the downloaded Qwen3-Reranker-0.6B and about 4 GB of free memory",
 ]

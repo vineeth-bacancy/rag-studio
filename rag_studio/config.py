@@ -26,30 +26,36 @@ class Role:
     model: str | None   # Ollama tag; None until the milestone that adds it
     runs_on: str        # "ollama" or "python"
     arrives: str | None = None  # milestone that switches it on, while model is None
+    # Where it runs: "local" is this computer (Ollama or this app); "remote" is the
+    # Colab runtime only, with no local fallback (it refuses loudly, with how to
+    # connect, when Remote AI is down).
+    where: str = "local"
 
 
 ROLES: tuple[Role, ...] = (
     # Since M4 each index profile names its own embedding model (Indexes);
     # this is the default index's.
     Role("embed", "Embedding", "Turns passages and questions into vectors. Each index has its own model; "
-         "this is the default index's.", "nomic-embed-text:latest", "ollama"),
+         "this is the default index's.", "google/embeddinggemma-2", "python"),
     Role("answer", "Answer", "Writes the answer from the retrieved passages.",
          "qwen3:1.7b", "ollama"),
-    Role("rewrite", "Query rewriting", "Rewrites questions and decides when to search again.",
-         "qwen3:1.7b", "ollama"),
+    Role("rewrite", "Query rewriting", "Rewrites questions, turns follow-ups into full questions and decides "
+         "when to search again.", "qwen3:8b", "ollama", where="remote"),
     Role("context", "Context lines", "Writes a sentence placing each passage in its document.",
-         "qwen3:1.7b", "ollama"),
+         "qwen3:8b", "ollama", where="remote"),
+    # Not in this version (user, 2026-10-22: the deterministic scorecard decides every row; the
+    # judge, RAGAS and tracing were cut from M6). No model, so nothing local is checked for it.
     Role("judge", "Judge", "Checks answers against their passages during evaluation.",
-         "qwen3:8b", "ollama"),
+         None, "ollama", arrives="a later version"),
     Role("vision", "Vision", "Describes charts and figures as text.",
          None, "ollama", arrives="M7"),
-    Role("rerank", "Reranker", "Re-orders search results by reading each passage with the question.",
-         None, "python", arrives="M5"),
+    Role("rerank", "Reranker", "Re-orders search results by reading each passage with the question. "
+         "Runs on this computer, or on Remote AI for the larger models.", "Qwen/Qwen3-Reranker-0.6B", "python"),
 )
 
 
 def ollama_roles() -> list[Role]:
-    return [r for r in ROLES if r.runs_on == "ollama" and r.model]
+    return [r for r in ROLES if r.runs_on == "ollama" and r.model and r.where == "local"]
 
 
 def role_model(key: str) -> str:

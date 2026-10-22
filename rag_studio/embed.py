@@ -115,6 +115,21 @@ class STModel:
         self.model.eval()
 
     @classmethod
+    def is_loaded(cls, spec: EmbeddingSpec) -> bool:
+        return (spec.model, spec.revision, spec.dtype) in cls._loaded
+
+    @classmethod
+    def release(cls) -> None:
+        """Unload every model (an evaluation does this between its search pass
+        and its answer pass) and ask the OS to take the memory back."""
+        import gc
+        from rag_studio.rerank import _trim
+        with cls._lock:
+            cls._loaded.clear()
+        gc.collect()
+        _trim()
+
+    @classmethod
     def get(cls, spec: EmbeddingSpec) -> "STModel":
         key = (spec.model, spec.revision, spec.dtype)
         with cls._lock:

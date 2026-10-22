@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ErrorState } from "@/components/common/states";
 import type { CompareRow, CompareSide, GoldenSet, Outcome, RunBrief, RunComparison } from "@/lib/api";
 import { NO_DATA, dateTimeLabel } from "@/lib/format";
-import { searchName } from "@/lib/search";
+import { searchName, setupExtras } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { OutcomeBadge, recallText } from "./badges";
 import { OutcomeCounts } from "./ladder";
@@ -99,8 +99,9 @@ export function RunCompare({
 export function runName(r: RunBrief): string {
   const what = r.label ?? Object.values(r.sets).map((s) => s.name).join(", ");
   const index = r.config.index_label ? ` · ${r.config.index_label}` : "";
-  const search = (r.config.retrieval && r.config.retrieval !== "dense") || r.config.section_cap
-    ? ` · ${searchName(r.config.retrieval, r.config.section_cap)}`
+  const extras = setupExtras(r.config);
+  const search = (r.config.retrieval && r.config.retrieval !== "dense") || r.config.section_cap || extras.length
+    ? ` · ${[searchName(r.config.retrieval, r.config.section_cap), ...extras].join(" · ")}`
     : "";
   const prompt = r.spec.mode === "answer" && r.config.prompt_version ? ` · prompt ${r.config.prompt_version}` : "";
   return `${what} · ${dateTimeLabel(r.started_at)}${index}${search}${prompt}`;
@@ -387,6 +388,63 @@ const KEY_LABELS: Record<string, string> = {
   "retrieval.metric": "Metric",
   "retrieval.exact": "Exact search",
   "retrieval.word_index.column": "Word index column",
+  // M5: each key appears only when its switch is on (rag_studio/retrieve.py SearchSpec.describe()).
+  "retrieval.order": "Order of the search steps",
+  "retrieval.rerank": "Reranker",
+  "retrieval.rerank_depth": "Passages the reranker reads",
+  "retrieval.rerank.id": "Reranker",
+  "retrieval.rerank.model": "Reranker model",
+  "retrieval.rerank.revision": "Reranker revision",
+  "retrieval.rerank.dtype": "Reranker precision",
+  "retrieval.rerank.quantization": "Reranker quantization",
+  "retrieval.rerank.where": "Reranker runs on",
+  "retrieval.rerank.depth": "Passages the reranker reads",
+  "retrieval.rerank.max_length": "Reranker length limit (tokens)",
+  "retrieval.rerank.instruction_version": "Reranker instruction",
+  "retrieval.rerank.instruction_sha256": "Reranker instruction sha256",
+  "retrieval.rewrite": "Query rewriting",
+  "retrieval.rewrite.technique": "Query rewriting",
+  "retrieval.rewrite.model": "Rewriting model",
+  "retrieval.rewrite.where": "Rewriting runs on",
+  "retrieval.rewrite.prompt_version": "Rewriting prompt",
+  "retrieval.rewrite.prompt_sha256": "Rewriting prompt sha256",
+  "retrieval.rewrite.num_ctx": "Rewriting context window",
+  "retrieval.rewrite.temperature": "Rewriting temperature",
+  "retrieval.rewrite.output": "Rewriting output",
+  "retrieval.rewrite.embed_as": "Draft answer embedded as",
+  "retrieval.agent_rounds": "Multi-step search rounds",
+  "retrieval.agent.technique": "Multi-step search",
+  "retrieval.agent.model": "Multi-step search model",
+  "retrieval.agent.where": "Multi-step search runs on",
+  "retrieval.agent.prompt_version": "Multi-step search prompt",
+  "retrieval.agent.prompt_sha256": "Multi-step search prompt sha256",
+  "retrieval.agent.num_ctx": "Multi-step search context window",
+  "retrieval.agent.temperature": "Multi-step search temperature",
+  "retrieval.agent.output": "Multi-step search output",
+  "retrieval.agent.rounds": "Multi-step search rounds",
+  "retrieval.agent.budget_s": "Multi-step search time budget (s)",
+  "retrieval.agent.budget_tokens": "Multi-step search token budget",
+  "retrieval.agent.evidence": "Evidence the controller reads",
+  "retrieval.agent.filter": "Document filter",
+  "followup.as_typed": "Follow-ups asked as typed",
+  "followup.technique": "Follow-up rewrite",
+  "followup.model": "Follow-up rewriting model",
+  "followup.where": "Follow-up rewriting runs on",
+  "followup.prompt_version": "Follow-up prompt",
+  "followup.prompt_sha256": "Follow-up prompt sha256",
+  "followup.num_ctx": "Follow-up context window",
+  "followup.temperature": "Follow-up temperature",
+  "followup.output": "Follow-up output",
+  "index.config.context.model": "Context lines written by",
+  "index.config.context.prompt_version": "Context line prompt",
+  "index.config.context.prompt_sha256": "Context line prompt sha256",
+  "index.config.context.window_policy": "Context line window",
+  "index.config.context.num_ctx": "Context line context window",
+  "runtime.reranker.where": "Reranker ran on",
+  "runtime.reranker.runtime": "Reranker runtime",
+  "runtime.remote_llm.gpu": "Remote AI GPU",
+  "runtime.remote_llm.model": "Remote AI model",
+  "runtime.remote_llm.runtime": "Remote AI runtime",
   "index.config.chunker.method": "Chunker",
   "index.config.chunker.labels": "Section label format",
   "answer.model": "Answer model",
@@ -403,6 +461,8 @@ const KEY_LABELS: Record<string, string> = {
 function keyLabel(key: string): string {
   if (KEY_LABELS[key]) return KEY_LABELS[key];
   if (key.startsWith("index.config.chunker.")) return `Chunker ${key.slice("index.config.chunker.".length).replace(/_/g, " ")}`;
+  // Volatile facts about where a run ran (library versions, threads): never part of its setup.
+  if (key.startsWith("runtime.")) return `Runtime: ${key.slice("runtime.".length).replace(/[._]/g, " ")}`;
   return key;
 }
 

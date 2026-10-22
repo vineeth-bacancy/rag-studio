@@ -66,8 +66,42 @@ def upstream():
 
 
 @pytest.fixture(scope="module")
-def gateway(upstream):
+def worker_stub():
+    """A stand-in for tools/colab/worker.py that records what reaches it."""
+    received: list[dict] = []
+
+    class Worker(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+        def _reply(self, obj, status=200):
+            body = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            received.append({"method": "GET", "path": self.path})
+            return self._reply({"loaded": "qwen3-4b", "served": ["qwen3-4b"]})
+
+        def do_POST(self):  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+            received.append({"method": "POST", "path": self.path, "body": body,
+                             "encoding": self.headers.get("Content-Encoding")})
+            return self._reply({"scores": [0.0] * len(body.get("documents") or []), "compute_ms": 5.0})
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Worker)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield httpd, received
+    httpd.shutdown()
+
+
+@pytest.fixture(scope="module")
+def gateway(upstream, worker_stub):
     mod = _load()
+    mod.Config.worker = f"http://127.0.0.1:{worker_stub[0].server_address[1]}"
     mod.Config.ollama = f"http://127.0.0.1:{upstream[0].server_address[1]}"
     mod.Config.token = TOKEN
     mod.Config.require_token = True
@@ -255,3 +289,102 @@ def test_it_refuses_to_start_without_a_token(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["server.py", "--port", "0"])
     assert mod.main() == 1
     assert "RAG_STUDIO_TOKEN" in capsys.readouterr().err
+
+
+# --- the worker routes (M5) ----------------------------------------------------------
+
+RERANK = json.dumps({"model": "qwen3-4b", "instruction": "i", "query": "SECRET QUESTION TEXT",
+                     "documents": ["SECRET PASSAGE ONE", "SECRET PASSAGE TWO"]}).encode()
+
+
+def test_the_worker_routes_forward_with_the_token(gateway, worker_stub):
+    status, body, headers = call(gateway[1], "POST", "/rerank", RERANK, token=TOKEN)
+    assert status == 200 and body["scores"] == [0.0, 0.0]
+    assert worker_stub[1][-1]["path"] == "/rerank" and worker_stub[1][-1]["body"]["model"] == "qwen3-4b"
+    assert "upstream;dur=" in headers.get("Server-Timing", "")
+    status, body, _ = call(gateway[1], "GET", "/worker", token=TOKEN)
+    assert status == 200 and body["loaded"] == "qwen3-4b"
+
+
+def test_the_worker_routes_need_the_token(gateway, worker_stub):
+    before = len(worker_stub[1])
+    assert call(gateway[1], "POST", "/rerank", RERANK)[0] == 401
+    assert call(gateway[1], "GET", "/worker")[0] == 401
+    assert call(gateway[1], "POST", "/rerank", RERANK, token="nope")[0] == 401
+    assert len(worker_stub[1]) == before
+
+
+@pytest.mark.parametrize("path", ["/contexts", "/rerank/x", "/worker/x", "/models", "/shell"])
+def test_other_worker_paths_are_404_before_auth_and_never_forwarded(gateway, worker_stub, path):
+    before = len(worker_stub[1])
+    for method in ("GET", "POST"):
+        assert call(gateway[1], method, path, b"{}" if method == "POST" else None)[0] == 404
+        assert call(gateway[1], method, path, b"{}" if method == "POST" else None, token=TOKEN)[0] == 404
+    assert len(worker_stub[1]) == before
+
+
+def test_a_get_on_rerank_and_a_post_on_worker_are_not_forwarded(gateway):
+    assert call(gateway[1], "GET", "/rerank", token=TOKEN)[0] == 404
+    assert call(gateway[1], "POST", "/worker", b"{}", token=TOKEN)[0] == 404
+
+
+def test_a_rerank_body_over_the_cap_is_413(gateway):
+    big = json.dumps({"documents": ["x" * 1000] * 9000}).encode()
+    assert len(big) > 8 * 1024 * 1024
+    assert call(gateway[1], "POST", "/rerank", big, token=TOKEN)[0] == 413
+
+
+def test_a_gzipped_request_is_inflated_and_forwarded_plain(gateway, worker_stub):
+    import gzip
+    status, body, _ = call(gateway[1], "POST", "/rerank", gzip.compress(RERANK), token=TOKEN,
+                           headers={"Content-Encoding": "gzip"})
+    assert status == 200 and body["scores"] == [0.0, 0.0]
+    last = worker_stub[1][-1]
+    assert last["body"]["documents"] == ["SECRET PASSAGE ONE", "SECRET PASSAGE TWO"]
+    assert last["encoding"] is None                      # what the worker got is plain JSON
+
+
+def test_a_corrupt_gzip_is_400_and_an_unknown_encoding_415(gateway, worker_stub):
+    before = len(worker_stub[1])
+    assert call(gateway[1], "POST", "/rerank", b"not gzip at all", token=TOKEN,
+                headers={"Content-Encoding": "gzip"})[0] == 400
+    assert call(gateway[1], "POST", "/rerank", RERANK, token=TOKEN,
+                headers={"Content-Encoding": "br"})[0] == 415
+    assert len(worker_stub[1]) == before
+
+
+def test_a_compression_bomb_is_413(gateway, worker_stub):
+    import gzip
+    before = len(worker_stub[1])
+    bomb = gzip.compress(b'{"documents": ["' + b"0" * (12 * 1024 * 1024) + b'"]}')
+    assert len(bomb) < 200_000                                      # a few KB on the wire
+    assert call(gateway[1], "POST", "/rerank", bomb, token=TOKEN, headers={"Content-Encoding": "gzip"})[0] == 413
+    assert len(worker_stub[1]) == before
+
+
+def test_a_gzipped_embed_request_works_on_the_old_routes_too(gateway, upstream):
+    import gzip
+    status, body, _ = call(gateway[1], "POST", "/api/embed", gzip.compress(EMBED), token=TOKEN,
+                           headers={"Content-Encoding": "gzip"})
+    assert status == 200 and len(body["embeddings"]) == 2
+
+
+def test_documents_are_counted_in_the_log_and_never_shown(gateway, capsys):
+    call(gateway[1], "POST", "/rerank", RERANK, token=TOKEN)
+    out = capsys.readouterr().out
+    assert "documents=2" in out and "model=qwen3-4b" in out
+    assert "SECRET" not in out and TOKEN not in out
+
+
+def test_a_missing_worker_is_a_502_with_a_reason(gateway):
+    mod, port = gateway
+    saved = mod.Config.worker
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+    mod.Config.worker = f"http://127.0.0.1:{free_port}"
+    try:
+        status, body, _ = call(port, "POST", "/rerank", RERANK, token=TOKEN)
+    finally:
+        mod.Config.worker = saved
+    assert status == 502 and "not answering" in body["error"]

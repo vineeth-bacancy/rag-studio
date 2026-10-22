@@ -200,6 +200,28 @@ UI. If the measurement shows 20 is too slow, top 10 becomes a measured option.
 On Colab, 4B fp16 behind an allowlisted `POST /rerank` with a NaN guard, then 8B
 in 8-bit as its own row (its fp16 weights, 16.4 GB, do not fit a T4).
 
+### 6.1 Measured in M5 (2026-10-16, VERIFIED-LIVE)
+
+| Reranker | Where | Per question, top 20 | Peak memory | Revision |
+|---|---|---|---|---|
+| 0.6B fp32 | this CPU, beside EmbeddingGemma 2 | 39 s median (batch 4), 42 s (batch 8); top 10: 15 s | 5.95 GB process RSS (so `RERANK_LOAD_GB` = 4.0) | `e61197ed…` |
+| 0.6B fp16 | T4 worker | 0.65 s compute, 0.96 s wall | 2.0 GB | `e61197ed…` |
+| 4B fp16 | T4 worker | 3.3 s compute, 3.6 s wall | 9.1 GB | `22e68366…` |
+| 8B 8-bit (bitsandbytes) | T4 worker | 5.5 s compute, 5.8 s wall | 10.7 GB | `77d193c7…` |
+
+- bf16 on this CPU was slower than fp32 and abandoned; dynamic int8 was not
+  measured. Agreement between the 0.6B on this CPU (fp32) and on the T4 (fp16)
+  was not measured (the user chose to save T4 time).
+- 4B and 8B together do not fit the T4 (found live; the worker frees one
+  before loading the other). qwen3:8b (about 5.6 GB at num_ctx 8192) and the
+  0.6B fit together; qwen3:8b and the 4B (9.1 GB peak) are run one after the
+  other.
+- **Quality (ladder row 6):** every size puts B4's answer at rank 1 on the
+  Docling index (it was rank 8). The 4B gives the best scorecard (22 · 1 · 2 on
+  Docling), the 8B the best MRR (0.946) but one more wrong answer. The card's
+  "8B is not better than 4B on English" holds here on answers.
+- No NaN or inf in any run (fp16 or 8-bit).
+
 ## 7. Docling
 
 | Fact | Status |
@@ -359,12 +381,13 @@ judge call.
 |---|---|---|---|
 | **Fixed-size vs semantic chunking** | Qu et al. 2024 (arXiv 2410.13070): fixed-size won evidence retrieval on 3 of 5 datasets; semantic helped only on artificially stitched documents; answer quality equal; "embedding quality matters more" | VERIFIED-DOC; **measured here in M3** | **Structure-aware passages with section labels** won ladder row 3 (Docling: 20 · 1 · 4 on Sets A + D vs the baseline's 18 · 2 · 5; `docs/ladder.md`). Semantic chunking is a profile and the GEP p19 teaching case; its retrieval is in `docs/ladder.md` |
 | **Hybrid search** | BEIR (2021): BM25 is a robust zero-shot baseline. Anthropic: adding contextual BM25 to contextual embeddings took failures from -35% to -49% | VERIFIED-DOC; **measured here in M3** | A switch, **off by default**: on unlabelled passages it fixes "global growth" (rank 11 → 2), on labelled passages it does not improve the scorecard (ladder row 4). Fused with our own RRF, checked against LanceDB's `RRFReranker` |
-| **Reranking** | BEIR: rerankers give the best zero-shot results at high compute cost. Anthropic: reranking took the reduction from -49% to -67% (Cohere reranker, top 150 → 20) | VERIFIED-DOC | Top 10 on CPU (latency, §6), top 30-50 on Colab. The gain from a 0.6B local model must be measured |
+| **Reranking** | BEIR: rerankers give the best zero-shot results at high compute cost. Anthropic: reranking took the reduction from -49% to -67% (Cohere reranker, top 150 → 20) | VERIFIED-DOC; **measured here in M5** | A switch, **off by default** until the user decides. Top 20 → 5 at every size (§6.1): B4 goes from a miss to rank 1 on the default index, and the 4B on Remote AI scores 22 · 1 · 2, the best ladder row (row 6) |
 | **Contextual retrieval** | Anthropic, 2024-09-19: 1 − recall@20 went 5.7% → 3.7% (contextual embeddings) → 2.9% (+ contextual BM25) → 1.9% (+ rerank), with Gemini embeddings on codebases, fiction and papers; one LLM call per chunk with the whole document in context | VERIFIED-DOC (vendor's own test) | Opt-in, built in bulk on Colab, cached by content hash. Targets the Q6 "executive summary" miss |
 | **HyDE** | Gao et al. 2022: DL19 nDCG@10 44.5 → 61.3 with text-davinci-003 + unsupervised Contriever; the paper warns weaker generators can hurt | VERIFIED-DOC | Off; a scorecard row |
 | **Multi-query / RAG-Fusion** | Rackauckas 2024: manual evaluation, no numbers; off-topic drift reported | VERIFIED-DOC (weak) | Off; a scorecard row |
 | **Decomposition** | Least-to-most (Zhou et al., ICLR 2023): SCAN length split ≥ 99% vs 16% for chain-of-thought. Self-ask (Press et al. 2023) narrows the compositionality gap (numbers not retrieved) | VERIFIED-DOC | Off; targets two-part questions like "What replaced FDsys, and when…" |
 | **Agentic RAG** | A-RAG (arXiv 2602.03442): big gains with GPT-4o-mini and GPT-5-mini (MuSiQue 52.8 → 74.1), no small-model data. "Do We Still Need GraphRAG?" (2604.09666): dense RAG is fine for single-hop, GraphRAG leads multi-hop by ~27 points, agentic search with 7B models is mixed (Search-o1 hurt). Pi-Serini (2605.10848): BM25 + a frontier model is strong | VERIFIED-DOC | Optional mode with hard round and time limits, run on Colab; whether qwen3 4B/8B can drive a 3-tool loop is the first thing to measure. No GraphRAG |
+| **Chat memory (follow-up rewriting)** | Elgohary, Peskov and Boyd-Graber, EMNLP 2019 ("Can You Unpack That?", ACL Anthology D19-1605): CANARD, 40,527 QuAC questions rewritten into standalone questions with the same answer. Vakulenko, Longpre, Tu and Anantha, WSDM 2021 ("Question Rewriting for Conversational Question Answering", doi 10.1145/3437963.3441748): rewrite the follow-up, then use an ordinary retriever and reader | VERIFIED-DOC (2026-10-22: bibliographic facts) | Built in M5: memory acts **only** through the standalone rewrite (qwen3:8b on Remote AI); the answer model never sees the conversation, so answers stay comparable with the scorecard. Set E measures it (rewritten against asked as typed) |
 | **ColPali** | Faysse et al., ICLR 2025: page-image multi-vector retrieval, strong on ViDoRe (numbers not retrieved) | VERIFIED-DOC (claim) | Not pursued: needs a GPU VLM and multi-vector storage; our corpus is text-first |
 
 **What the scorecard must measure** to decide each one: recall@k (and
@@ -400,3 +423,5 @@ appendix. The main ones:
   2410.13070 (semantic chunking), 2104.08663 (BEIR), 2407.01449 (ColPali),
   2406.12624 (judging the judges), 2408.04667 (non-determinism), 2412.12509;
   thinkingmachines.ai "Defeating Nondeterminism in LLM Inference".
+- Chat memory (added 2026-10-22): aclanthology.org/D19-1605 (CANARD);
+  ir.webis.de/anthology/2021.wsdm_conference-2021.43 (Vakulenko et al., WSDM 2021).

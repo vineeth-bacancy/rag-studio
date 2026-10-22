@@ -12,9 +12,11 @@ import { duration } from "@/components/ask/trace";
 import { api, type DocumentFile, type Run, type RunResult } from "@/lib/api";
 import { docTitle } from "@/lib/documents";
 import { NO_DATA, dateTimeLabel, num } from "@/lib/format";
-import { ranksText, searchName } from "@/lib/search";
+import { REWRITE_LABELS, ranksText, searchName, setupExtras } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { HitLabel, OutcomeBadge, RunStatusBadge, recallText } from "./badges";
+import { rankingText } from "./ladder";
+import { FollowupTable, SearchSteps } from "./search-steps";
 
 /**
  * One run, question by question: where the answer page ranked, what the model
@@ -34,6 +36,19 @@ export function RunDetail({
   const pct = run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0;
   const cfg = run.config;
   const recall = Object.entries(s?.recall ?? {}).filter(([, v]) => v.total > 0);
+  const ranking = s?.ranking;
+  const ret = cfg.retrieval;
+  // A run records each M5 switch as its full description (eval.py `_config`).
+  const rerank = ret.rerank && typeof ret.rerank === "object" ? (ret.rerank as Record<string, unknown>) : null;
+  const rewrite = ret.rewrite && typeof ret.rewrite === "object" ? (ret.rewrite as Record<string, unknown>) : null;
+  const agent = ret.agent ?? null;
+  const extras = setupExtras({
+    rerank: typeof ret.rerank === "string" ? ret.rerank : null,
+    rerank_name: rerank ? rerankName(rerank) : null,
+    rewrite: rewrite ? String(rewrite.technique) : typeof ret.rewrite === "string" ? ret.rewrite : null,
+    agent_rounds: agent ? Number(agent.rounds) : (ret.agent_rounds ?? null),
+  });
+  const asTyped = cfg.followup?.as_typed === true;
 
   async function cancel() {
     try {
@@ -50,7 +65,9 @@ export function RunDetail({
         <CardTitle as="h2">{run.label ?? Object.values(run.sets).map((x) => x.name).join(", ")}</CardTitle>
         <CardDescription>
           {dateTimeLabel(run.started_at)} · {run.spec.mode === "answer" ? `answers by ${cfg.answer?.model}` : "retrieval only"} · top{" "}
-          {cfg.k} passages · {cfg.index.label} index · {searchName(cfg.retrieval?.method, cfg.retrieval?.section_cap)}
+          {cfg.k} passages · {cfg.index.label} index ·{" "}
+          {[searchName(cfg.retrieval?.method, cfg.retrieval?.section_cap), ...extras].join(" · ")}
+          {cfg.followup ? (asTyped ? " · follow-ups asked as typed" : " · follow-ups rewritten") : ""}
           {cfg.answer ? ` · prompt ${cfg.answer.prompt_version}` : ""}
           {run.seconds !== null ? ` · ${duration(run.seconds * 1000)}` : ""}
           {s?.scored ? ` · ${s.scored} answers scored` : ""}
@@ -103,7 +120,29 @@ export function RunDetail({
               ))}
             </TileGrid>
           )}
+          {ranking && ranking.n > 0 && (
+            <TileGrid className="grid-cols-2">
+              <Tile
+                label="MRR (50 deep)"
+                value={ranking.mrr !== null ? ranking.mrr.toFixed(3) : NO_DATA}
+                hint="1 when every first answer page is at rank 1"
+              />
+              <Tile
+                label="Recall@20"
+                value={ranking.recall20 !== null ? `${ranking.recall20}/${ranking.n}` : NO_DATA}
+                hint="Answer page in the top 20"
+              />
+            </TileGrid>
+          )}
         </div>
+        {ranking && ranking.multi.n > 0 && (
+          <p className="-mt-2 text-xs text-pretty text-muted-foreground tabular-nums">
+            Questions about one document: {rankingText(ranking.single)}. Questions that need two documents:{" "}
+            {rankingText(ranking.multi)}.
+          </p>
+        )}
+
+        {s?.followups && <FollowupTable results={run.results} summary={s.followups} asTyped={asTyped} />}
 
         <div className="@container -mx-4">
           <Table>
@@ -144,6 +183,37 @@ export function RunDetail({
                   .map(([k, v]) => `${k} ${String(v)}`)
                   .join(", ")}`
               : NO_DATA,
+            ...(rerank
+              ? {
+                  Reranker: `${rerank.model} @ ${String(rerank.revision).slice(0, 8)} · ${rerank.dtype}${rerank.quantization ? ` (${rerank.quantization})` : ""} · ${rerank.where === "colab" ? "Remote AI" : "this computer"} · top ${rerank.depth}`,
+                  "Reranker instruction": `${rerank.instruction_version} · sha256 ${String(rerank.instruction_sha256).slice(0, 12)}`,
+                }
+              : {}),
+            ...(rewrite
+              ? {
+                  "Query rewriting": `${REWRITE_LABELS[String(rewrite.technique)] ?? rewrite.technique} · ${rewrite.model} on Remote AI · ${rewrite.prompt_version} · sha256 ${String(rewrite.prompt_sha256).slice(0, 12)}${rewrite.embed_as ? ` · draft embedded as a ${rewrite.embed_as}` : ""}`,
+                }
+              : {}),
+            ...(agent
+              ? {
+                  "Multi-step search": `up to ${agent.rounds} rounds · ${agent.budget_s} s · ${num(Number(agent.budget_tokens))} tokens · ${agent.model} · ${agent.prompt_version} · sha256 ${String(agent.prompt_sha256).slice(0, 12)}`,
+                  "Document filter": String(agent.filter ?? NO_DATA),
+                }
+              : {}),
+            ...(cfg.followup
+              ? {
+                  "Follow-ups": asTyped
+                    ? "asked as typed, not rewritten"
+                    : `${cfg.followup.model} on Remote AI · ${cfg.followup.prompt_version} · sha256 ${String(cfg.followup.prompt_sha256).slice(0, 12)}`,
+                }
+              : {}),
+            ...(cfg.runtime
+              ? {
+                  "Where it ran": Object.entries(cfg.runtime)
+                    .map(([part, facts]) => `${part}: ${Object.values(facts ?? {}).map(String).join(", ")}`)
+                    .join(" · "),
+                }
+              : {}),
             "Answer model": cfg.answer ? `${cfg.answer.model} · ${cfg.answer.parameter_size ?? NO_DATA} · ${cfg.answer.quantization ?? NO_DATA}` : NO_DATA,
             "Model digest": cfg.answer?.digest?.slice(0, 19) ?? NO_DATA,
             Options: cfg.answer ? `thinking ${cfg.answer.think ? "on" : "off"}, temperature ${cfg.answer.temperature}, num_ctx ${cfg.answer.num_ctx}` : NO_DATA,
@@ -281,6 +351,8 @@ function ResultPanel({ r, facts, docs }: { r: RunResult; facts: string[] | null;
         </section>
       </div>
 
+      <SearchSteps r={r} docs={docs} />
+
       {r.usage && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-t bg-muted/40 px-4 py-2 text-[11px] text-muted-foreground tabular-nums">
           <span>{duration(r.timings.generate_ms)} to answer</span>
@@ -312,4 +384,11 @@ function FactChip({ ok, label }: { ok: boolean; label: string }) {
       {label}
     </li>
   );
+}
+
+/** "Remote AI · 4B", as the pickers name it (rag_studio/rerank.py labels), from a run's recorded reranker. */
+function rerankName(rr: Record<string, unknown>): string {
+  const size = String(rr.model ?? rr.id ?? "").split("-").pop() ?? "";
+  const where = rr.where === "colab" ? "Remote AI" : "This computer";
+  return `${where} · ${size}${rr.quantization ? ` (${rr.quantization === "int8" ? "8-bit" : String(rr.quantization)})` : ""}`;
 }

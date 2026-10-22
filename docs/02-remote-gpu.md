@@ -165,6 +165,85 @@ replies over 16 KB for a client that accepts it (httpx does); JSON floats
 compress about 3×. **Not measured yet on a runtime**: the session above ran
 the gateway before the change.
 
+## The worker, compression and keep-alive (M5)
+
+`tools/colab/worker.py` runs the rerankers on the GPU. It is plain Python
+(stdlib server; torch and sentence-transformers load only with a model), binds
+to **127.0.0.1:8001 only** and has no lock of its own: the gateway is the lock.
+The gateway (version 2) forwards exactly `POST /rerank` and `GET /worker`
+besides Ollama's routes, with the same token, the same 8 MB cap and a 404
+before the token is looked at for any other path. Models are pinned by Hugging
+Face revision (`rag_studio/rerank.py` and the worker keep one table; a test
+keeps them equal). One model is resident at a time; a swap frees the old one
+first (4B and 8B together do not fit a T4: found live, fixed, tested) and an
+out-of-memory is a 507 that unloads and recovers. A rerank-only runtime
+(`--worker …` with no models) installs **no Ollama**.
+
+**Compression and connections** (`rag_studio/llm.py`, `remote.py`): one
+kept-alive `httpx` client per runtime; request bodies of 4 KB or more are
+gzipped (httpx never does this by itself) and the gateway inflates them under
+the same 8 MB cap (a bomb is a 413, bad gzip a 400, another encoding a 415);
+the read timeout is 95 s, under Cloudflare's 100 s, and HTTP 524 reads "The
+request took longer than the tunnel's 100 s limit. Send a smaller batch."
+Every forwarded reply carries `Server-Timing`, so a call's wall time splits
+into the runtime's time and the network's.
+
+**Measured on a T4 (2026-10-16), 20 real passages per call, 12 calls per model:**
+
+| Reranker | GPU compute (median) | Wall time (median) | Network share | Peak GPU memory | Load |
+|---|---|---|---|---|---|
+| 0.6B fp16 | 0.65 s | 0.96 s | 0.29 s | 2.0 GB | n/a (loaded first) |
+| 4B fp16 | 3.3 s | 3.6 s | 0.31 s | 9.1 GB | 36 s |
+| 8B int8 | 5.5 s | 5.8 s | 0.30 s | 10.7 GB | 80 s |
+| *this computer, 0.6B fp32 (CPU)* | *39 s* | *39 s* | *-* | *3.8 GB over the embedder* | *7 s* |
+
+- **Keep-alive:** 36 calls over 3 models opened **1** connection (before: one per call).
+- **Gzip, requests:** 185 KB of JSON went up as 56 KB (3.3×). The replies are 0.4 KB.
+  Replies over 16 KB (embedding batches) were not part of this run.
+- Each call spends about 0.3 s on the network whatever the model, so the
+  4B and 8B are limited by the GPU, not the tunnel.
+- 4B and 8B (8-bit, bitsandbytes) never produced NaN in these runs.
+
+**Keeping the runtime alive.** Colab reclaims a runtime that sits idle. The
+setup cell ends in a keep-alive loop: every 4 minutes it scores two short
+passages with the model the worker holds (a real GPU touch, no extra GPU
+memory, and a check that the worker is alive) and updates one status line in
+place. `./rag llm keepalive --copy` prints the same loop as a cell for a runtime
+that is already up. Its stop button ends only the loop: every service starts in
+its own session (`daemon`, `setsid`), because an earlier version started them
+in the cell's process group and the stop button killed the tunnel and worker.
+Colab's own limits (a free session's maximum length, a closed tab) still apply.
+
+## Context lines, rewriting and one session's plan (M5, 2026-10-22)
+
+A runtime set up with `./rag llm colab --models qwen3:8b --worker context
+qwen3-0.6b-gpu qwen3-4b` serves qwen3:8b through Ollama (query rewriting,
+follow-ups, multi-step search, context lines) and the GPU worker (rerankers;
+the 0.6B is loaded first and the 4B is downloaded at start and swapped in
+when asked). qwen3:8b (about 5.6 GB at num_ctx 8192) and the 4B (9.1 GB peak)
+do not fit a T4 together, so one session runs in this order:
+
+1. **Context lines** (`./rag context write <profile>`): two batches of 8
+   passages in flight; the runtime loops over its own Ollama and keeps each
+   finished line, so a retried batch costs nothing. Measured: about 0.31-0.34
+   lines/s end to end, median 2.9 s of GPU per line, 1.4% of the call time on
+   the network.
+2. **Every query rewrite once**: rewrites depend only on the question, so they
+   are generated for all test questions at once and remembered (101 calls in
+   305 s); meanwhile this computer builds the `-ctx` index.
+3. **Unload qwen3:8b** (`POST /api/chat`, `messages: []`, `keep_alive: 0`),
+   then **rerank** with the 4B: one retrieval-only run per setup that will be
+   scored (about 4 s per question: 3.7 s GPU, 0.15 s network; the first call
+   also loads the 4B, 36 s).
+4. Disconnect. The scorecards replay every remembered output here.
+
+**What happened on the day:** the first runtime stopped answering after about
+an hour (the tunnel's 502, then 530: Colab reclaimed it); the user started a
+new one with the same cell, the laptop connected to its new URL, and the job
+went on from the 1,335 lines already cached, since the qwen3:8b digest was the
+same. Two jobs had stopped earlier on one bad unit each (a tunnel timeout, a
+401-character line): both now count the unit and go on.
+
 ## Failures, and what each means
 
 | Seen | Meaning | Do |
@@ -172,14 +251,19 @@ the gateway before the change.
 | "The Colab runtime is not answering" | the runtime is gone (reclaimed) or the tunnel is down | run the same cell again, connect with what it shows |
 | "refused the token" | a runtime that made its own token issues a new one each time | paste its new connect code |
 | "The tunnel answered … with an error page" | Cloudflare's own error: nothing behind the tunnel | as above |
-| "does not serve qwen3-embedding:8b" | the cell was run with other models | run the default cell |
+| "does not serve qwen3-embedding:8b" | the cell was run for another job (rewriting, a reranker): only the Colab indexes are affected | run the Embeddings cell when you need those indexes |
+| "took longer than the tunnel's 100 s limit" (524) | one request held too long | send a smaller batch; bulk jobs ask again by themselves |
+| "was not downloaded when this runtime started" (409 from the worker) | a reranker missing from the cell's `--worker` list | run the cell again with it listed |
+| "Query rewriting is done by Remote AI, which is not connected" | a rewrite that is not remembered yet, with no runtime | connect, or replay a run whose rewrites are cached |
 | "different build" | the runtime's model digest differs from the index's | rebuild the index on Colab |
 | GPU "None" / a model "on the CPU" | Colab handed out a runtime without a GPU | Runtime › Change runtime type › T4 GPU, run the cell again |
 
 ## Not here yet, on purpose
 
-- The rerank service on the runtime (`POST /rerank`, same token and cap): M5.
 - Answer, vision and judge models on the GPU, and an optional loud local
-  fallback for them: M6. M4's runtime serves embeddings.
+  fallback for them (M6/M7 as planned). M5's runtime serves rewriting, context
+  lines and rerankers; the answer model stays on this computer.
+- Gzip on replies over 16 KB (embedding batches) is still unmeasured on a real
+  runtime: M5's sessions did not serve embedders. Requests were measured (3.3×).
 - EmbeddingGemma 2 on Colab: it runs in this app (sentence-transformers); its
   image path arrives with figures in M7.

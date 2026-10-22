@@ -80,6 +80,13 @@ def columns(table: Any) -> list[str]:
     return [c for c in COLUMNS if c in names]
 
 
+def rerank_columns(table: Any) -> list[str]:
+    """What search reads beyond `columns`: the text a reranker reads (exactly
+    what was embedded). It rides on hits inside the engine and is never
+    serialised for the UI."""
+    return ["search_text"] if "search_text" in table.schema.names else []
+
+
 def connect() -> Any:
     paths.LANCEDB.mkdir(parents=True, exist_ok=True)
     return lancedb.connect(str(paths.LANCEDB))
@@ -182,7 +189,15 @@ def ensure_fts(table: Any) -> dict[str, Any]:
             "lancedb_version": lancedb.__version__, "table_version": table.version}
 
 
-def search_bm25(table: Any, query: str, k: int) -> list[dict[str, Any]]:
+def doc_filter(doc_id: str, known: set[str] | list[str]) -> str:
+    """A `where` expression for one document, built ONLY from a document id the index knows. Free text
+    (a model's output, a request field) never reaches a `where` string: an unknown id is refused here."""
+    if doc_id not in set(known):
+        raise ValueError(f"{doc_id!r} is not a document in this index.")
+    return "doc_id = '" + doc_id.replace("'", "''") + "'"
+
+
+def search_bm25(table: Any, query: str, k: int, where: str | None = None) -> list[dict[str, Any]]:
     """The k best passages by BM25 over the word index. `score` is LanceDB's
     BM25 score: comparable within one question only."""
     if fts_index(table) is None:
@@ -190,26 +205,32 @@ def search_bm25(table: Any, query: str, k: int) -> list[dict[str, Any]]:
                                "unavailable. Add it with ./rag ingest --profile <profile>.")
     if not query.strip():
         return []
-    rows = (table.search(query, query_type="fts", fts_columns=fts_column(table))
-            .limit(k).select([*columns(table), "_score"]).to_list())
-    return [{c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"rank": rank, "score": float(r["_score"])}
+    q = table.search(query, query_type="fts", fts_columns=fts_column(table))
+    if where:
+        q = q.where(where, prefilter=True)             # filter first, then take the k best: not k best, then filter
+    rows = q.limit(k).select([*columns(table), *rerank_columns(table), "_score"]).to_list()
+    return [{c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"search_text": r.get("search_text") or r["text"]}
+            | {"rank": rank, "score": float(r["_score"])}
             for rank, r in enumerate(rows, start=1)]
 
 
 # --------------------------------------------------------------------------- dense search
 
-def search_dense(table: Any, vector: list[float], k: int) -> list[dict[str, Any]]:
+def search_dense(table: Any, vector: list[float], k: int, where: str | None = None) -> list[dict[str, Any]]:
     """The k nearest passages by cosine similarity, exactly (a flat scan).
 
     `score` is the cosine similarity (1 - LanceDB's cosine distance). Scores on
     this corpus bunch between 0.6 and 0.9, so the rank says more than the
     number (spec §6).
     """
-    rows = (table.search(vector).distance_type("cosine").bypass_vector_index()
-            .limit(k).select([*columns(table), "_distance"]).to_list())
+    q = table.search(vector).distance_type("cosine").bypass_vector_index()
+    if where:
+        q = q.where(where, prefilter=True)
+    rows = q.limit(k).select([*columns(table), *rerank_columns(table), "_distance"]).to_list()
     out = []
     for rank, r in enumerate(rows, start=1):
-        r = {c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"rank": rank, "score": 1.0 - float(r["_distance"])}
+        r = ({c: r.get(c, DEFAULTS.get(c)) for c in COLUMNS} | {"search_text": r.get("search_text") or r["text"]}
+             | {"rank": rank, "score": 1.0 - float(r["_distance"])})
         out.append(r)
     return out
 

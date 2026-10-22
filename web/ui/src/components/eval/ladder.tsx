@@ -3,9 +3,9 @@ import { AlertTriangle } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { Outcome } from "@/lib/api";
+import type { Outcome, RankingStats } from "@/lib/api";
 import { NO_DATA } from "@/lib/format";
-import { searchName } from "@/lib/search";
+import { searchName, setupExtras } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { OUTCOME, recallText } from "./badges";
 
@@ -23,9 +23,21 @@ export interface LadderVariant {
     section_cap?: number | null;
     index_label?: string | null;
     prompt_version?: string | null;
+    rerank?: string | null;
+    rerank_name?: string | null;
+    rewrite?: string | null;
+    agent_rounds?: number | null;
   } | null;
+  /** MRR and recall@20 over the runs each set's numbers came from (50 deep). */
+  ranking?: RankingStats & { single: RankingStats; multi: RankingStats };
   /** The variant's runs used different index builds: don't read them together. */
   mixed: boolean;
+}
+
+/** "MRR 0.894 · recall@20 26 of 26", or "-" when no question counted. */
+export function rankingText(r: RankingStats | null | undefined): string {
+  if (!r || r.mrr === null || r.recall20 === null) return NO_DATA;
+  return `MRR ${r.mrr.toFixed(3)} · recall@20 ${r.recall20} of ${r.n}`;
 }
 
 export interface LadderRow {
@@ -82,7 +94,10 @@ export function Ladder({ rows }: { rows: LadderRow[] }) {
               <TableHead className="hidden text-right @lg:table-cell">Set B</TableHead>
               <TableHead className="hidden text-right @lg:table-cell">Set D</TableHead>
               <TableHead className="hidden @2xl:table-cell">Set A scorecard</TableHead>
-              <TableHead className="hidden pr-4 @3xl:table-cell">Set D scorecard</TableHead>
+              <TableHead className="hidden pr-4 @3xl:table-cell @4xl:pr-2">Set D scorecard</TableHead>
+              <TableHead className="hidden pr-4 text-right @4xl:table-cell" title="Mean reciprocal rank of the first answer page, searching 50 deep">
+                MRR
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -112,7 +127,8 @@ function EmptyLadderRow({ row }: { row: LadderRow }) {
       <TableCell className="hidden text-right align-top tabular-nums @lg:table-cell">{NO_DATA}</TableCell>
       <TableCell className="hidden text-right align-top tabular-nums @lg:table-cell">{NO_DATA}</TableCell>
       <TableCell className="hidden align-top @2xl:table-cell">{NO_DATA}</TableCell>
-      <TableCell className="hidden pr-4 align-top @3xl:table-cell">{NO_DATA}</TableCell>
+      <TableCell className="hidden pr-4 align-top @3xl:table-cell @4xl:pr-2">{NO_DATA}</TableCell>
+      <TableCell className="hidden pr-4 text-right align-top tabular-nums @4xl:table-cell">{NO_DATA}</TableCell>
     </TableRow>
   );
 }
@@ -131,7 +147,7 @@ function VariantRow({ row, variant: v, first, last }: { row: LadderRow; variant:
         {many && <p className={cn("text-sm", first && "mt-1")}>{v.label}</p>}
         <p className="text-[11px] text-muted-foreground">
           {v.config?.index_label ? `${v.config.index_label} index · ` : ""}
-          {v.config ? `${searchName(v.config.retrieval, v.config.section_cap)} · ` : ""}
+          {v.config ? `${[searchName(v.config.retrieval, v.config.section_cap), ...setupExtras(v.config)].join(" · ")} · ` : ""}
           {v.config?.answer_model ?? NO_DATA}
           {v.config?.prompt_version ? ` · prompt ${v.config.prompt_version}` : ""} · {v.config?.embedding_model ?? NO_DATA} · run{" "}
           {v.runs.map((x, i) => (
@@ -153,6 +169,7 @@ function VariantRow({ row, variant: v, first, last }: { row: LadderRow; variant:
         <p className="mt-1 text-[11px] text-muted-foreground tabular-nums @lg:hidden">
           Set B {recallText(v.sets["set-b"]?.recall)} · Set D {recallText(v.sets["set-d"]?.recall)}
         </p>
+        <p className="mt-1 text-[11px] text-muted-foreground tabular-nums @4xl:hidden">{rankingText(v.ranking)}</p>
         <div className="mt-1 text-[11px] @2xl:hidden">
           <OutcomeCounts outcomes={a?.outcomes} />
         </div>
@@ -167,8 +184,19 @@ function VariantRow({ row, variant: v, first, last }: { row: LadderRow; variant:
       <TableCell className="hidden align-top @2xl:table-cell">
         <OutcomeCounts outcomes={a?.outcomes} />
       </TableCell>
-      <TableCell className="hidden pr-4 align-top @3xl:table-cell">
+      <TableCell className="hidden pr-4 align-top @3xl:table-cell @4xl:pr-2">
         <OutcomeCounts outcomes={v.sets["set-d"]?.outcomes} />
+      </TableCell>
+      <TableCell
+        className="hidden pr-4 text-right align-top tabular-nums @4xl:table-cell"
+        title={v.ranking?.recall20 != null ? `recall@20: ${v.ranking.recall20} of ${v.ranking.n} questions` : undefined}
+      >
+        {v.ranking?.mrr != null ? v.ranking.mrr.toFixed(3) : NO_DATA}
+        {v.ranking?.recall20 != null && (
+          <span className="block text-[11px] text-muted-foreground">
+            @20 {v.ranking.recall20}/{v.ranking.n}
+          </span>
+        )}
       </TableCell>
     </TableRow>
   );

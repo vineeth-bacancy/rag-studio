@@ -87,3 +87,43 @@ question's embedding, and nothing next to the answer model's 20-60 s.
 ## Measured: M3 retrieval
 
 See [`docs/ladder.md`](../ladder.md), rows 3 and 4, for every index × method.
+
+## M5: the reranker
+
+A first-stage search compares one vector (or one bag of words) for the
+question with one for each passage; neither has read the two together. A
+**reranker** (a cross-encoder) does: it reads the question and a passage as one
+input and answers "does this passage answer the question?". That is far slower
+per passage, so it only re-reads the **dense top 20** and re-orders them; the
+top 5 go to the answer model. Ranks 21-50 keep their order, so a search 5 deep
+is still the first 5 of a search 50 deep.
+
+- **Model:** Qwen3-Reranker (research §6), pinned by Hugging Face revision:
+  0.6B on this computer (fp32, sentence-transformers `CrossEncoder`), and 0.6B
+  fp16, 4B fp16 and 8B 8-bit on the Colab GPU worker. One instruction for all,
+  recorded with its sha256: "Given a question about reports, retrieve the
+  passage that states the answer". The score is the logit of "yes" minus "no"
+  (only the order matters), with a NaN/inf guard.
+- **What it reads:** the passage's `search_text` (section label + text), the
+  same text that was embedded, against the question as asked.
+- **Where it sits:** last in `retrieve.run()`: rewrite → search each query →
+  fuse → limit per section → multi-step rounds → **rerank the top 20** → cut to
+  k. Ask, evaluation and the search lab all call this one function.
+- **Remembered scores:** `data/cache/rerank/` keeps every score by reranker,
+  question and passages. A retrieval-only run on Colab fills it; the scorecard
+  after it replays the same scores with Colab off. Each result records hit or
+  miss; `--fresh-rerank` forces a new call (for timing).
+- **Memory:** the 0.6B needs about 4 GB free beside EmbeddingGemma 2 in the
+  same process (`RERANK_LOAD_GB`); it refuses with how to recover when that is
+  not there. An evaluation releases both models before the answer model runs.
+
+**Measured (row 6, `docs/ladder.md`):** on the default Docling index the
+answer to B4 ("global growth") moves from rank 8 (a miss) to **rank 1** with
+every size; on the baseline from 11 to 1-2. Docling + the 4B scores
+**22 · 1 · 2** (row 5d: 20 · 3 · 2), the best row on the ladder. Cost per
+question at depth 20: 39 s on this CPU (0.6B), 0.65 s / 3.3 s / 5.5 s of T4
+time (0.6B / 4B / 8B) plus about 0.3 s of network.
+
+In the Search lab, **Rerank** adds the fourth column on request (20-35 s here
+the first time, a few seconds on Remote AI), and "Lines: Fusion | Reranking"
+switches which neighbouring columns are joined.

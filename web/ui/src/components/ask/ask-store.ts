@@ -1,15 +1,26 @@
 "use client";
 
+import { mutate } from "swr";
 import { create } from "zustand";
 
-import { ApiError, api, type AskDone, type AskError, type AskReady, type SearchMethod, type TraceStep } from "@/lib/api";
+import {
+  ApiError,
+  api,
+  type AskDone,
+  type AskError,
+  type AskReady,
+  type ChatFull,
+  type SearchMethod,
+  type TraceStep,
+} from "@/lib/api";
 
 /**
- * The questions asked on this page, kept while you move between pages.
+ * The conversation on this page, kept while you move between pages.
  *
- * Memory between questions (follow-ups rewritten into standalone questions)
- * arrives in M5; until then each question is answered on its own, and the
- * list is only a record of what you asked.
+ * A conversation is saved on this computer (data/chat/). Memory acts only
+ * through a rewrite: a follow-up ("And for 2027?") is first made a full
+ * question by Remote AI, and the answer model never sees the conversation.
+ * "Ask as typed" sends a follow-up without that rewrite.
  */
 export interface Exchange {
   id: number;
@@ -22,26 +33,43 @@ export interface Exchange {
   text: string;
   done?: AskDone;
   error?: AskError;
+  /** Loaded from a saved conversation: the answer and where it came from, not the passages. */
+  saved?: { standalone: string | null; rewritten: boolean | null; citations: { n: number; chunk_id: string; doc_id: string; page: number }[]; refused: boolean; ms: number | null };
+  /** Sent without the follow-up rewrite, on purpose. */
+  asTyped?: boolean;
 }
 
 interface AskState {
   exchanges: Exchange[];
   busy: boolean;
+  /** The saved conversation these exchanges belong to; null until the first answer. */
+  chatId: string | null;
   /** Which index to search, how, and which prompt version to answer with.
    * Each answer records what it actually used (ready.index, ready.search,
    * ready.prompt). */
-  profile: string;
-  prompt: string;
+  profile: string | null;
+  prompt: string | null;
   search: SearchMethod;
   /** "Limit per section": at most this many passages per section ahead of the rest; null is off. */
   sectionCap: number | null;
+  /** A reranker id, or null for no reranking. */
+  rerank: string | null;
+  setRerank: (rerank: string | null) => void;
+  /** decompose, multi or hyde; null is no rewriting. Needs Remote AI. */
+  rewrite: string | null;
+  setRewrite: (rewrite: string | null) => void;
+  /** Multi-step search: its round limit, or null for off. Needs Remote AI. */
+  agentRounds: number | null;
+  setAgentRounds: (rounds: number | null) => void;
   setProfile: (profile: string) => void;
   setPrompt: (prompt: string) => void;
   setSearch: (search: SearchMethod) => void;
   setSectionCap: (cap: number | null) => void;
-  send: (question: string) => Promise<void>;
+  send: (question: string, opts?: { asTyped?: boolean }) => Promise<void>;
   stop: () => void;
+  /** Start a new conversation (the old one stays saved). */
   clear: () => void;
+  openChat: (chat: ChatFull) => void;
 }
 
 let inFlight: AbortController | null = null;
@@ -55,16 +83,25 @@ export const useAsk = create<AskState>((set, get) => {
   return {
     exchanges: [],
     busy: false,
-    profile: "baseline",
-    prompt: "v2",
+    chatId: null,
+    // null means "the app's default", which the API names (indexes
+    // `default_profile`, prompts `default`); a request then omits the field.
+    profile: null,
+    prompt: null,
     search: "dense",
     sectionCap: null,
+    rerank: null,
+    setRerank: (rerank) => set({ rerank }),
+    rewrite: null,
+    setRewrite: (rewrite) => set({ rewrite }),
+    agentRounds: null,
+    setAgentRounds: (agentRounds) => set({ agentRounds }),
     setProfile: (profile) => set({ profile }),
     setPrompt: (prompt) => set({ prompt }),
     setSearch: (search) => set({ search }),
     setSectionCap: (sectionCap) => set({ sectionCap }),
 
-    async send(question) {
+    async send(question, opts) {
       const text = question.trim();
       if (!text || get().busy) return;
       inFlight?.abort();
@@ -73,16 +110,21 @@ export const useAsk = create<AskState>((set, get) => {
       const id = nextId++;
       set({
         busy: true,
-        exchanges: [...get().exchanges, { id, question: text, status: "streaming", stages: [], text: "" }],
+        exchanges: [...get().exchanges, { id, question: text, status: "streaming", stages: [], text: "", asTyped: opts?.asTyped }],
       });
       try {
         await api.askStream(
           {
             question: text,
-            profile: get().profile,
-            prompt: get().prompt,
+            profile: get().profile ?? undefined,
+            prompt: get().prompt ?? undefined,
             search: get().search,
             section_cap: get().sectionCap,
+            rerank: get().rerank ?? undefined,
+            rewrite: get().rewrite ?? undefined,
+            agent_rounds: get().agentRounds ?? undefined,
+            chat_id: get().chatId ?? undefined,
+            as_typed: opts?.asTyped || undefined,
           },
           (event) => {
             switch (event.event) {
@@ -91,15 +133,19 @@ export const useAsk = create<AskState>((set, get) => {
                 break;
               case "ready":
                 patch(id, { ready: event.data });
+                if (event.data.chat_id) set({ chatId: event.data.chat_id });
                 break;
               case "delta":
                 patch(id, { text: (current(id)?.text ?? "") + event.data.text });
                 break;
               case "done":
                 patch(id, { done: event.data, text: event.data.answer, status: "done" });
+                // The answer is now saved in its conversation: refresh the list.
+                void mutate("/chats");
                 break;
               case "error":
                 patch(id, { error: event.data, status: "error" });
+                if (event.data.chat_id && get().exchanges.some((e) => e.id !== id && e.status === "done")) set({ chatId: event.data.chat_id });
                 break;
             }
           },
@@ -133,7 +179,22 @@ export const useAsk = create<AskState>((set, get) => {
 
     clear() {
       inFlight?.abort();
-      set({ exchanges: [] });
+      set({ exchanges: [], chatId: null });
+    },
+
+    openChat(chat) {
+      inFlight?.abort();
+      set({
+        chatId: chat.id,
+        exchanges: chat.turns.map((t) => ({
+          id: nextId++,
+          question: t.question,
+          status: "done" as const,
+          stages: [],
+          text: t.answer,
+          saved: { standalone: t.standalone_question, rewritten: t.rewritten, citations: t.citations, refused: t.refused, ms: t.total_ms },
+        })),
+      });
     },
   };
 });

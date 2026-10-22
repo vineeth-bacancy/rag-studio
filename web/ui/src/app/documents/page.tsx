@@ -34,7 +34,7 @@ export default function DocumentsPage() {
           icon={FileUp}
           title="No documents yet"
           description="Add PDF reports to the library to ask questions about them."
-          hint="Upload from the browser arrives in M8. Until then, copy PDFs into data/pdfs."
+          hint="Upload from the browser comes in a later version. To add a PDF, copy it into data/pdfs and rebuild the index on the Indexes page."
         />
       ) : (
         <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="Documents">

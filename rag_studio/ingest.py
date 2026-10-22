@@ -357,10 +357,23 @@ def build(profile: IndexProfile, *, force: bool = False, progress: Progress | No
         lock.release()
 
 
-def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on: str) -> BuildResult:
-    timings: dict[str, float] = {}
-    t0 = time.perf_counter()
+@dataclass
+class Cut:
+    """A profile's documents cut into passages: what both a build and the
+    context-line job need, so they always cut the same passages."""
+    docs: list[Document]
+    passages: list[chunk.Passage]
+    meta: dict[str, dict[str, Any]]
+    cleaned: dict[str, clean.CleanDoc]
+    timings: dict[str, float]
 
+
+def passages_for(profile: IndexProfile, *, say: Progress = lambda stage, info: None,
+                 make_embed_fn: Callable[[dict[str, clean.CleanDoc]], Any] | None = None) -> Cut:
+    """parse -> clean (and guard) -> chunk for one profile. `make_embed_fn`
+    gives the semantic chunker its sentence vectors (the only chunker that
+    needs a model); every other profile cuts without one."""
+    timings: dict[str, float] = {}
     t = time.perf_counter()
     docs = documents()
     if not docs:
@@ -378,13 +391,7 @@ def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on
                   "seconds": timings["parse_s"]})
 
     t = time.perf_counter()
-    if client is None and profile.embedding.backend == "ollama" and on == "local":
-        client = OllamaClient()
-    embedder = Embedder(profile.embedding, client=client, on=on)
-    digest = embedder.check()
-    embed_fn = None
-    if profile.chunker.method == "semantic":
-        embed_fn = _sentence_vectors(embedder, [pg for cd in cleaned.values() for pg in cd.pages], say)
+    embed_fn = make_embed_fn(cleaned) if make_embed_fn and profile.chunker.method == "semantic" else None
     passages: list[chunk.Passage] = []
     for d in docs:
         pages: Any = cleaned[d.doc_id].pages if d.doc_id in cleaned else d.pages
@@ -396,6 +403,25 @@ def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on
         passages += cut
     timings["chunk_s"] = time.perf_counter() - t
     say("chunk", {"passages": len(passages), "seconds": timings["chunk_s"]})
+    return Cut(docs, passages, meta, cleaned, timings)
+
+
+def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on: str) -> BuildResult:
+    timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    if client is None and profile.embedding.backend == "ollama" and on == "local":
+        client = OllamaClient()
+    embedder = Embedder(profile.embedding, client=client, on=on)
+    digest = embedder.check()
+    cut = passages_for(profile, say=say, make_embed_fn=lambda cleaned: _sentence_vectors(
+        embedder, [pg for cd in cleaned.values() for pg in cd.pages], say))
+    docs, passages, meta, cleaned = cut.docs, cut.passages, cut.meta, cut.cleaned
+    timings |= cut.timings
+    if profile.contextual:
+        from rag_studio import context as context_lines
+        found = context_lines.attach(profile, passages, meta)
+        say("context", {"lines": len(passages), "digest": found["digest"]})
 
     config = profile.config()
     doc_rows = []
@@ -450,7 +476,7 @@ def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on
 
     rows = [{
         "chunk_id": p.chunk_id, "doc_id": p.doc_id, "page": p.page,
-        "text": p.text, "context": None, "content_hash": h,
+        "text": p.text, "context": p.context, "content_hash": h,
         "vector": vectors[i] if i in vectors else reuse[h],
         "parser": profile.parser, "chunker": profile.chunker.id,
         "char_start": p.char_start, "char_end": p.char_end,

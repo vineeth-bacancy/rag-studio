@@ -167,3 +167,26 @@ def test_a_changed_label_with_the_same_counts_is_a_new_build(structure, monkeypa
     again = ingest.build(profiles.PYMUPDF_STRUCTURE, client=fake)
     assert not again.up_to_date and again.manifest["embedded"] == again.manifest["rows"]
     assert again.manifest["rows_sha256"] != first.manifest["rows_sha256"]
+
+
+# ------------------------------------------------------------------ the document filter (M5, the agent's one tool)
+
+def test_a_document_filter_is_applied_before_the_k_best_are_taken(structure):
+    _, _, r = structure
+    known = r.doc_ids()
+    where = store.doc_filter(known[0], known)
+    for spec in (SearchSpec(), SearchSpec("bm25")):
+        hits, _ = r.search("What is the carbon footprint?", 5, spec, where=where)
+        assert len(hits) == 5 and {h["doc_id"] for h in hits} == {known[0]}
+    # a filter that matches nothing returns nothing: a prefilter, not "k best, then drop"
+    none = "doc_id = 'no_such_document'"
+    assert r.search("What is the carbon footprint?", 5, SearchSpec(), where=none)[0] == []
+    assert r.search("carbon footprint", 5, SearchSpec("bm25"), where=none)[0] == []
+    assert r.search("What is the carbon footprint?", 5, SearchSpec(), where=None)[0]      # default unchanged
+
+
+@pytest.mark.parametrize("bad", ["x' OR '1'='1", "gpo_2018_annual_report; DROP", "", "doc_id = 'x'", "' --"])
+def test_free_text_never_reaches_a_where_string(bad):
+    with pytest.raises(ValueError, match="is not a document in this index"):
+        store.doc_filter(bad, ["gpo_2018_annual_report", "apple_imac_per_2024_10"])
+    assert store.doc_filter("apple_imac_per_2024_10", ["apple_imac_per_2024_10"]) == "doc_id = 'apple_imac_per_2024_10'"

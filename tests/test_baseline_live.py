@@ -13,11 +13,11 @@ pytestmark = pytest.mark.ollama
 
 @pytest.fixture(scope="module")
 def retriever():
-    if store.active_manifest(profiles.DEFAULT) is None:
+    if store.active_manifest(profiles.BASELINE.id) is None:
         pytest.skip("No baseline index yet: run ./rag ingest")
     from rag_studio.retrieve import retriever as active
 
-    return active(profiles.DEFAULT)
+    return active(profiles.BASELINE.id)
 
 
 def ranks(retriever, set_id: str) -> dict[str, tuple[int | None, int | None]]:

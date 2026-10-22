@@ -196,16 +196,47 @@ function ConnectDialog({
 
 // --------------------------------------------------------------------------- setup
 
+/**
+ * What the runtime is for. Each is one setup cell: the models Ollama serves
+ * there and the GPU worker's jobs (tools/colab/worker.py). qwen3:8b and the
+ * 4B reranker are loaded one at a time on a T4.
+ */
+const JOBS: { id: string; label: string; what: string; models?: string; worker?: string }[] = [
+  { id: "embed", label: "Embeddings", what: "Builds and searches the indexes made on Colab (Qwen3-Embedding 0.6B and 8B)." },
+  {
+    id: "rewrite",
+    label: "Rewriting and context lines",
+    what: "qwen3:8b rewrites questions and follow-ups, steers multi-step search, and writes context lines.",
+    models: "qwen3:8b",
+    worker: "context",
+  },
+  {
+    id: "rerank",
+    label: "Larger reranker",
+    what: "Qwen3-Reranker 4B on the GPU. Starts fastest: it installs no Ollama.",
+    worker: "qwen3-4b",
+  },
+  {
+    id: "all",
+    label: "Rewriting and rerankers",
+    what: "Both of the above, plus the 0.6B reranker. The 4B swaps in when a run asks for it.",
+    models: "qwen3:8b",
+    worker: "context,qwen3-0.6b-gpu,qwen3-4b",
+  },
+];
+
 function ColabSetup() {
   const [cell, setCell] = useState<ColabCell | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [jobId, setJobId] = useState(JOBS[0].id);
+  const job = JOBS.find((j) => j.id === jobId) ?? JOBS[0];
 
-  const load = async () => {
-    if (cell || loading) return;
+  const load = async (next = job, force = false) => {
+    if ((cell && !force) || loading) return;
     setLoading(true);
     try {
-      setCell(await api.llmColab());
+      setCell(await api.llmColab(next.models || next.worker ? { models: next.models, worker: next.worker } : undefined));
     } catch (e) {
       toast.error("Couldn't build the setup cell.", { description: e instanceof Error ? e.message : undefined });
     } finally {
@@ -254,6 +285,37 @@ function ColabSetup() {
               <strong className="text-foreground">Connect</strong>.
             </li>
           </ol>
+          <fieldset className="space-y-1.5">
+            <legend className="text-xs font-medium text-muted-foreground">What the runtime is for</legend>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {JOBS.map((j) => (
+                <label
+                  key={j.id}
+                  className={cn(
+                    "flex cursor-pointer gap-2 rounded-md p-2 text-xs ring-1 ring-foreground/10 has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
+                    j.id === jobId && "bg-muted ring-foreground/30",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="colab-job"
+                    value={j.id}
+                    checked={j.id === jobId}
+                    onChange={() => {
+                      setJobId(j.id);
+                      setCell(null);
+                      void load(j, true);
+                    }}
+                    className="mt-0.5 accent-foreground"
+                  />
+                  <span>
+                    <span className="block font-medium">{j.label}</span>
+                    <span className="block text-pretty text-muted-foreground">{j.what}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={() => void copy()} disabled={!cell}>
               {loading ? (
@@ -294,15 +356,30 @@ function ColabSetup() {
           {cell && (
             <>
               <p className="text-xs text-pretty text-muted-foreground">
-                It serves {cell.models.map((m, i) => (
-                  <span key={m}>
-                    {i > 0 && (i === cell.models.length - 1 ? " and " : ", ")}
-                    <code className="rounded bg-muted px-1 font-mono">{m}</code>
-                  </span>
-                ))}{" "}
-                on Ollama {cell.ollama_version ?? "(latest)"}, the same version as this computer, so both sides embed
-                with the same runtime. It writes {cell.files.join(" and ")} and checks each against a digest first, so a
-                truncated paste stops instead of running half a script.
+                {cell.models.length > 0 ? (
+                  <>
+                    It serves{" "}
+                    {cell.models.map((m, i) => (
+                      <span key={m}>
+                        {i > 0 && (i === cell.models.length - 1 ? " and " : ", ")}
+                        <code className="rounded bg-muted px-1 font-mono">{m}</code>
+                      </span>
+                    ))}{" "}
+                    on Ollama {cell.ollama_version ?? "(latest)"}, the same version as this computer, so both sides run
+                    the same model code.
+                  </>
+                ) : (
+                  <>It installs no Ollama.</>
+                )}
+                {cell.worker && cell.worker.length > 0 && (
+                  <>
+                    {" "}
+                    Its GPU worker runs <code className="rounded bg-muted px-1 font-mono">{cell.worker.join(", ")}</code>{" "}
+                    with the same library versions as this computer, pinned to exact model revisions.
+                  </>
+                )}{" "}
+                It writes {cell.files.join(", ")} and checks each against a digest first, so a truncated paste stops
+                instead of running half a script.
               </p>
               <pre
                 tabIndex={0}
@@ -355,6 +432,20 @@ function RuntimeFacts({ probe }: { probe: RemoteProbe }) {
         {probe.ollama_version ?? NO_DATA}
         {probe.latency_ms != null && <span className="text-muted-foreground"> · answered in {num(probe.latency_ms)} ms</span>}
       </dd>
+      {probe.worker && (
+        <>
+          <dt className="text-muted-foreground">GPU worker</dt>
+          <dd className="min-w-0 text-xs">
+            <span className="font-mono">{probe.worker.served.join(", ") || "no reranker"}</span>
+            {probe.worker.context && <span className="text-muted-foreground"> · writes context lines</span>}
+            <span className="text-muted-foreground">
+              {" "}
+              · {probe.worker.loaded ? `${probe.worker.loaded} loaded` : "nothing loaded"}
+              {probe.worker.vram?.peak_mb ? `, peak ${num(probe.worker.vram.peak_mb)} MB` : ""}
+            </span>
+          </dd>
+        </>
+      )}
     </>
   );
 }
@@ -427,6 +518,8 @@ export function ModelBackend() {
   const reachable = probe?.reachable;
   const onCpu = (probe?.loaded ?? []).filter((m) => !m.on_gpu).map((m) => m.name);
   const noGpu = probe?.reachable && !probe.gpu?.gpus?.length;
+  // A runtime set up for another job (rewriting, a reranker) does not serve the Colab indexes'
+  // embedders: worth knowing, not a fault (M5-01).
   const missing = probe?.missing ?? [];
   const status = !connected
     ? null
@@ -436,7 +529,7 @@ export function ModelBackend() {
         : "info"
       : !reachable
         ? "unavailable"
-        : noGpu || onCpu.length || missing.length
+        : noGpu || onCpu.length
           ? "warning"
           : "healthy";
 
@@ -547,14 +640,10 @@ export function ModelBackend() {
           </Alert>
         )}
         {missing.length > 0 && (
-          <Alert className="border-amber-500/50 bg-amber-500/10">
-            <AlertTriangle className="size-4 text-amber-600 dark:text-amber-400" aria-hidden />
-            <AlertTitle className="text-sm text-amber-700 dark:text-amber-400">A model the Colab indexes need is missing</AlertTitle>
-            <AlertDescription className="text-xs text-pretty">
-              The runtime does not serve {missing.join(", ")}. Run the setup cell (it serves them by default), then
-              connect again.
-            </AlertDescription>
-          </Alert>
+          <p className="text-xs text-pretty text-muted-foreground">
+            This runtime does not serve <span className="font-mono">{missing.join(", ")}</span>, so the indexes built on
+            Colab cannot be asked while it is connected. To use them, run the setup cell for Embeddings.
+          </p>
         )}
 
         {test && (
@@ -571,14 +660,27 @@ export function ModelBackend() {
               ) : (
                 <XCircle className="size-4 text-red-600 dark:text-red-400" aria-hidden />
               )}
-              {test.ok ? `Embedded a test sentence with each model in ${seconds(test.seconds)}` : `Failed at the ${test.stage} step`}
+              {test.ok ? `Tested each model the runtime serves in ${seconds(test.seconds)}` : `Failed at the ${test.stage} step`}
             </p>
             {test.ok &&
               test.embedded.map((r) => (
                 <p key={r.model} className="text-muted-foreground">
-                  <span className="font-mono">{r.model}</span> · {num(r.dimensions)} dimensions · {seconds(r.seconds)}
+                  <span className="font-mono">{r.model}</span> embedded a sentence · {num(r.dimensions)} dimensions ·{" "}
+                  {seconds(r.seconds)}
                 </p>
               ))}
+            {test.ok &&
+              (test.chatted ?? []).map((r) => (
+                <p key={r.model} className="text-muted-foreground">
+                  <span className="font-mono">{r.model}</span> answered a one-word chat · {seconds(r.seconds)}
+                </p>
+              ))}
+            {test.ok && test.worker && (
+              <p className="text-muted-foreground">
+                GPU worker serves <span className="font-mono">{test.worker.served.join(", ") || "no reranker"}</span>
+                {test.worker.loaded ? ` · ${test.worker.loaded} loaded` : ""}
+              </p>
+            )}
             {!test.ok && (
               <>
                 <p className="break-words text-red-700 dark:text-red-400">{test.error}</p>
@@ -621,10 +723,24 @@ export function ModelBackend() {
               </span>
             </li>
             <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">
-              <span className="w-24 shrink-0 font-medium">Answer, others</span>
+              <span className="w-24 shrink-0 font-medium">Rewriting</span>
+              <span className="min-w-0 flex-1 text-pretty text-muted-foreground">
+                Remote AI only (qwen3:8b): query rewriting, follow-up questions, multi-step search and context lines.
+                Without it these switches are off and say why.
+              </span>
+            </li>
+            <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">
+              <span className="w-24 shrink-0 font-medium">Reranker</span>
+              <span className="min-w-0 flex-1 text-pretty text-muted-foreground">
+                The one you pick: the 0.6B on this computer (about 39 s a question), or the 0.6B, 4B or 8B on Remote
+                AI&apos;s GPU worker (seconds).
+              </span>
+            </li>
+            <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">
+              <span className="w-24 shrink-0 font-medium">Answer, judge</span>
               <span className="min-w-0 flex-1 text-pretty text-muted-foreground">
                 <Cpu className="mr-1 inline size-3 align-[-1px]" aria-hidden />
-                Local AI. Answer models on the GPU are measured in M6.
+                Local AI.
               </span>
             </li>
             <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">

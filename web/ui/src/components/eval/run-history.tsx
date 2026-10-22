@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { RunBrief } from "@/lib/api";
 import { NO_DATA, dateTimeLabel } from "@/lib/format";
-import { searchName } from "@/lib/search";
+import { searchName, setupExtras } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { duration } from "@/components/ask/trace";
 import { RunStatusBadge, recallText } from "./badges";
@@ -66,7 +66,7 @@ export function RunHistory({
                     <p className="text-[11px] text-muted-foreground">
                       {dateTimeLabel(r.started_at)}
                       {r.config.index_label ? ` · ${r.config.index_label} index` : ""} ·{" "}
-                      {searchName(r.config.retrieval, r.config.section_cap)} ·{" "}
+                      {[searchName(r.config.retrieval, r.config.section_cap), ...setupExtras(r.config)].join(" · ")} ·{" "}
                       {r.spec.mode === "answer" ? r.config.answer_model : "retrieval only"}
                       {r.spec.mode === "answer" && r.config.prompt_version ? ` · prompt ${r.config.prompt_version}` : ""}
                       {r.seconds !== null ? ` · ${duration(r.seconds * 1000)}` : ""}

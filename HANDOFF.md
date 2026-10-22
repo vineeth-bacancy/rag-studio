@@ -1,6 +1,6 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-15 ~22:45 IST, at the end of M4. A new session should read, in
+Updated 2026-10-22 ~19:20 IST, at the end of M5. A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -23,7 +23,62 @@ questions.
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
 
-## M4 status: complete (staged, not committed)
+## M5 status: complete (staged, not committed)
+
+**Built:** the reranker (`rerank.py`: Qwen3-Reranker 0.6B here, 0.6B/4B/8B-8bit on the Colab GPU
+worker, pinned revisions, scores cached), contextual retrieval (`context.py`: windows, prompt
+context-v1, resumable Remote AI job, export), query rewriting (`rewrite.py`: split into parts,
+several phrasings, draft answer first, follow-up rewrite; JSON schema; cached), multi-step search
+(`agent.py`: 3 rounds, validated document filter, stop reasons), conversations (`chat.py`), the one
+pipeline `retrieve.run`, two-pass evaluation, MRR and recall@20, Set E (8 follow-ups). Colab: the
+gateway v2 + `worker.py` (rerank, context), gzip both ways, keep-alive. **UI:** Ask as a
+conversation ("Searched for", Ask as typed, saved list), reranker/rewriting/multi-step switches;
+Search lab Reranked column; How it works 4 and 8; Evaluation switches, Set E table, "How it was
+searched"; Indexes "Context lines" section; Settings roles by machine, Defaults, setup-cell jobs.
+
+| Check | Result |
+|---|---|
+| Tests | `./rag test` **531 passed, 1 skipped** (288 at M4) |
+| UI | typecheck and lint clean; QA findings M5-01..07 (01-05 fixed, 06-07 open, P3/P2) in `docs/qa/2026-10-22-m5-rerank-rewrite-chat.md` |
+| M5 target: B4 "global growth" a Hit on 5d | **rank 8 → 1** with every reranker (`20261016-154536-14cd` and later) |
+
+**Ladder (Sets A+D Pass · Refused · Wrong, qwen3:1.7b; all in `docs/ladder.md`):**
+
+| Row | Best variant | A+D | Note |
+|---|---|---|---|
+| 5d (start) | Docling + EmbeddingGemma 2 | 20·3·2 | B4 missed |
+| **6d** | + Qwen3-Reranker 4B (Remote AI) | **22·1·2** | best row; 0.6B 20·2·3, 8B 21·1·3 |
+| 7b | 6d + context lines | 21·2·2 | MRR up, D10 lost; 7a not measured (user) |
+| 8a/8e | 6c + split into parts / draft answer first | 21·1·3 | PyMuPDF +1 (D10); Docling 8b/8d/8f all = 6d |
+| 9a / 9b | + multi-step search | 21·1·3 / 22·1·2 | no answer changed; 10% bad controller decisions |
+| Set E | follow-ups rewritten vs as typed | 7·0·1 vs 5·1·2 | memory worth +2 Pass, +3 hits |
+
+**Defaults are unchanged** (5d, prompt v3, dense, every switch off). **Waiting for the user:** which
+techniques become defaults (candidates: the 4B reranker on Remote AI, or the 0.6B here), and
+whether to commit `data/context/docling-structure-embeddinggemma2-ctx.jsonl` (1.0 MB, 1.38 h of T4,
+not regenerable word for word; left unstaged).
+
+**If `data/` is wiped:** the M2-M4 commands, then (Colab with `--models qwen3:8b --worker context
+qwen3-0.6b-gpu qwen3-4b`) `./rag context import docling-structure-embeddinggemma2-ctx` (from the
+export, if committed) or `./rag context write …`, `./rag index build docling-structure-embeddinggemma2-ctx`,
+then each row's retrieval-only run on Colab (fills the caches) and its scorecard here:
+`./rag eval --set a b d --prompt v3 --rerank qwen3-4b [--rewrite …] [--agent 3] --profile <p>
+--ladder N --label "<…>"` (run ids and labels in `docs/ladder.md`).
+
+## Next: M6 of the reduced plan (decided 2026-10-22)
+
+**Read `docs/plans/m6-m8.md` first: it is the scope now and wins over the spec.** The user's
+answers (2026-10-22, don't re-ask): defaults stay as they are (all M5 switches off); the
+context-line export is committed; M6 = qwen3.5:4b **and** gemma4:e4b locally (the 6.6 GB pull is
+approved) + How it works 9, 10, 12, 13; the judge, RAGAS and tracing are **cut**; M7 = figures as
+vision descriptions only (Set C, row 11) + How it works 11; browser upload is **deferred**; M8 =
+the full QA matrix + docs. Estimate: about 21 h of work, 3 sessions, 1-2 short Colab sessions.
+
+Before any long local run: `free -m` (≥ 7 GB available; ask the user to close VS Code/Vivaldi),
+`ollama ps`, the trading timer (19:15 IST; a skip needs the user's word, and a reboot wipes it), and
+run scorecards with the memory watchdog (`phase_s9.sh` pattern in the M5 log).
+
+## M4 status: complete (committed by the user as 8f3d2e4)
 
 **User decisions (2026-10-15):** row 5 on **both parsers** (6 profiles:
 {pymupdf, docling}-structure × {Qwen3-Embedding 0.6B, EmbeddingGemma 2,
@@ -189,8 +244,9 @@ If `data/` is wiped: `./rag ingest` (baseline), `./rag ingest --profile
 pymupdf-clean` (~6 min), `./rag ingest --profile docling-clean` (~15 min of
 Docling + ~7 min embedding), then the row-1 commands below and
 `./rag eval --set a b d --profile <p> [--prompt v3] --ladder 2 --label "<variant>"`
-(~11 min each). Row 1: `./rag eval --set a b --ladder 1 --label Baseline` and
-`./rag eval --set d --ladder 1 --label "Baseline: edge cases"`.
+(~11 min each). Row 1 (the defaults changed in M5, so pin them): `./rag eval --set a b --profile
+baseline --prompt v2 --ladder 1 --label Baseline` and `./rag eval --set d
+--profile baseline --prompt v2 --ladder 1 --label "Baseline: edge cases"`.
 
 ## Decisions settled (M1-M4)
 
@@ -211,6 +267,16 @@ Docling + ~7 min embedding), then the row-1 commands below and
 
 ## Not done, on purpose (where it goes)
 
+**From M5 (2026-10-22):**
+- Context lines for PyMuPDF: 170 of 1,214 written; 7a not measured (user: save T4 time).
+- `agent-v2` (require `query` when the controller says "search"): the 10% bad decisions; a new
+  prompt version means a new measurement.
+- The 0.6B reranker on this CPU (fp32) vs on the T4 (fp16): agreement not measured; rows 6a/6b used
+  the T4. Dynamic int8 on the CPU not measured. Gzip on replies over 16 KB still unmeasured on a runtime.
+- QA gaps (see the QA doc): page-level 768/1024/1440 for the new pages, a keyboard-only pass over the
+  new controls, dark theme on How it works 4 and 8.
+- Context-line quality: 42% still begin "The passage…" (prompt context-v1 not revised).
+
 - Docling's letter-spaced fragments and spaced footnote numbers: shown, not repaired.
 - Editable test questions in the UI: M8. Set C (figure question): M7.
 - How it works widgets: steps 4, 8 (M5), 9, 10, 12 (M6), 11, 13 (M7). Step 5 done in M4.
@@ -229,16 +295,164 @@ Docling + ~7 min embedding), then the row-1 commands below and
   cut the page-level 80th finds; not tuned (it is an option, not a default).
 - Scrollbars tested in Chrome only.
 
-## Next: M5 (the reranker and smarter retrieval)
+## M5 log (how it went; the status is above)
 
-Spec §17 M5: Qwen3-Reranker (0.6B local via sentence-transformers CrossEncoder,
-research §6; 4B on Colab behind a `POST /rerank` service in the gateway: same
-token, cap, allowlist; test it like `tests/test_colab_gateway.py`), contextual
-retrieval (bulk on Colab), query rewriting, the agentic loop, chat memory; the
-Search lab's reranked column; How it works 4 and 8. Done when "global growth"
-(B4) is a Hit. First: the user's default decision (3b or 5d) sets the base for
-rows 6-9. Approved pull: Qwen3-Reranker-0.6B (HF, 1.19 GB). Measure the gzip
-gateway on the next Colab session.
+### M5 progress (update after every phase)
+
+- **2026-10-22 session (resumed after the weekly limit cut the 2026-10-16 one):**
+  - State found: 507 tests pass; P0-P2 done; **row 6 measured** (6a-6f, all on the T4, scores
+    cached; written into `docs/ladder.md`; **B4 is a Hit on 5d**: rank 8 → 1, run
+    `20261016-154536-14cd`; best row 6d Docling + 4B 22 · 1 · 2). Engine for P3-P5 (context,
+    rewrite, agent, chat, Set E) was done; Ask's conversation UI was half done.
+  - User decisions (2026-10-22): **context lines for Docling only** (7a not measured, to save T4
+    time); **row 9 in a short second Colab session** after the row-8 scorecards.
+  - Done today: Ask conversation UI finished (list refresh, save warning); Search lab **Reranked
+    column** + "Lines: Fusion | Reranking"; How it works **step 4** (`context-lab.tsx`,
+    `learn.context_lab`) and **step 8** (`rewrite-lab.tsx`, `learn.rewrite_lab` replays runs,
+    `rewrite_live`); Evaluation: rewrite/multi-step/as-typed switches, Set E table, MRR and
+    recall@20, per-question "How it was searched"; Settings: roles say where they run (Local AI /
+    Remote AI only), python roles show downloaded/loaded, a read-only **Defaults** card, the setup
+    cell's "What the runtime is for" picker; Health shows the GPU worker. Fixed: the context export
+    test leaked into `data/context/` (`paths.CONTEXT` now redirected by `tmp_data`); a timed-out
+    `/context` batch is asked again instead of failing the job (seen live once in ~120 batches).
+  - Colab session 1 (runtime `journals-formed-…`, `--models qwen3:8b --worker context
+    qwen3-0.6b-gpu qwen3-4b`): Docling context lines resumed from 769/1,473. Next on it:
+    `precache_rewrites.py` (every rewrite + Set E follow-up, index-independent), local build of
+    `docling-structure-embeddinggemma2-ctx`, then `phase_rerank.sh` (unload qwen3:8b; 4B scores for
+    7b, row 8 on 6d / 7b / 6c bases, Set E). Both scripts are in the session scratchpad; their
+    commands are plain `./rag eval --mode retrieval …` runs and are easy to retype.
+  - **13:21 checkpoint:** all 1,473 Docling context lines written (1.38 h of T4 model time in all, median
+    2.9 s/line; exported to `data/context/docling-structure-embeddinggemma2-ctx.jsonl`, 1.0 MB; the
+    first runtime died at 1,335 and the user restarted it, new URL `nations-snow-con-avatar`);
+    `docling-structure-embeddinggemma2-ctx` built here in 1,284 s; all 101 rewrites cached (305 s);
+    QA findings M5-01..06 in `docs/qa/2026-10-22-m5-rerank-rewrite-chat.md` (05 fixed: the Indexes page
+    never drew the `-ctx` indexes). 7b retrieval (`20261022-075111-2af7`): MRR 0.894 → 0.925 but D10
+    (two documents) rank 4 → 24.
+  - **14:40 CHECKPOINT (session limit near). Resume from here.**
+    - Colab is **disconnected** (session 1 done: 14 retrieval runs, 0 errors, every 4B score,
+      rewrite and Set E follow-up rewrite **cached**: scorecards replay with Colab off).
+    - **Scorecards done** (all `--prompt v3 --rerank qwen3-4b`, Sets A+D = Pass · Refused · Wrong):
+      | Row | Run | A+D | Recall A/B/D | MRR |
+      |---|---|---|---|---|
+      | 7b Docling ctx + 4B | `20261022-081914-e582` | 21·2·2 | 9/6/10 | 0.925 |
+      | 8a PyMuPDF + 4B + decompose | `20261022-082934-1484` | 21·1·3 | 9/6/11 | 0.952 |
+      | 8c PyMuPDF + 4B + multi | `20261022-083900-5409` | 20·2·3 | 9/6/10 | 0.925 |
+      | 8e PyMuPDF + 4B + hyde | `20261022-084756-90f9` | 21·1·3 | 9/6/11 | 0.933 |
+      | 8b Docling (6d) + 4B + decompose | `20261022-085553-67f6` | 22·1·2 | 9/6/11 | 0.894 |
+      | 8d Docling (6d) + 4B + multi | `20261022-090353-c357` | 22·1·2 | 9/6/11 | 0.914 |
+      | 8f Docling (6d) + 4B + hyde | `20261022-091217-0f71` | 22·1·2 | 9/6/11 | 0.878 |
+      **Row-9 bases fixed:** PyMuPDF 8a (`--rewrite decompose`), Docling **6d** (no rewrite: 8b/8d/8f all tie it).
+      **Set E done** (Docling + 4B): rewritten `20261022-092055-d263` 7·0·1, rewrite OK 6/8, hits 7/8; as typed `20261022-092354-264e` 5·1·2, hits 4/8. All local scorecards finished, none failed.
+      Bases: 6c 20·2·3 (PyMuPDF), 6d 22·1·2 (Docling). Rows 6 and 7 are written in `docs/ladder.md`;
+      **row 8 is not written yet** (use the table above + 8d/8f).
+    - **Running in the background when this was written** (dies with the session; check
+      `data/runs/` for status `done` vs `running`/`interrupted`): 8d Docling + multi, then 8f
+      Docling + hyde, then Set E rewritten and Set E as typed, all on `docling-structure-embeddinggemma2`.
+      If any is missing, rerun it exactly (Colab not needed; unload the answer model first):
+      `ollama stop qwen3:1.7b; ./rag eval --set a b d --prompt v3 --rerank qwen3-4b --profile
+      docling-structure-embeddinggemma2 --rewrite multi --ladder 8 --label "Docling + 4B + several
+      phrasings (8d)"` (8f: `--rewrite hyde`, label "… draft answer first (8f)"); Set E:
+      `./rag eval --set e --prompt v3 --rerank qwen3-4b --profile docling-structure-embeddinggemma2
+      --label "Set E: follow-ups rewritten, Docling + 4B"` and the same with `--as-typed` and label
+      "Set E: follow-ups as typed, Docling + 4B". Three refused attempts (`20261022-082839/41/43`,
+      not enough memory) are failed runs that do not count.
+    - **Decided from the numbers:** Docling's row-8 base is **6d** (7b lost D10); PyMuPDF's row-9
+      base is **8a** (ties 8e on A+D, higher MRR, cheaper). Docling's row-9 base = the best of
+      6d/8b/8d/8f (if none beats 6d's 22·1·2, use 6d: no rewrite).
+    - **Row 9 so far (17:55):** phase A decisions cached in `20261022-093248-77a7` (PyMuPDF 8a: 27 enough,
+      4 bad output) and `20261022-093611-1a8c` (Docling 6d: 28 enough, 3 bad output); every bad output is "search
+      without a usable query" (the schema does not require `query` for `search`: the obvious next fix, a new
+      prompt version). A usage-limit pause lost that runtime; a rerank-only runtime could not replay the 7 bad
+      decisions because bad outputs were never cached (phase B runs `…121932-835e`, `…122003-202b` failed: they do
+      not count). Fixed: `rewrite.call` replays cached outputs on a runtime without the rewrite model, and an
+      `agent` bad output is cached (raw + error) and replays as the same stop (tests in test_rewrite/test_agent).
+      Now running `session2c.sh` on runtime `advert-helpful-…` (qwen3:8b + 0.6B/4B): re-asks only the missing
+      decisions, unloads qwen3:8b, reranks both bases with the 4B. Then disconnect and score 9a/9b locally:
+      `ollama stop qwen3:1.7b; ./rag eval --set a b d --prompt v3 --rerank qwen3-4b --agent 3 --profile
+      pymupdf-structure-embeddinggemma2 --rewrite decompose --ladder 9 --label "PyMuPDF 8a + multi-step (9a)"`
+      and `… --profile docling-structure-embeddinggemma2 --ladder 9 --label "Docling 6d + multi-step (9b)"`.
+    - **18:20 the laptop froze** during the 9a scorecard (swap thrash: VS Code ~6.9 GB + Vivaldi + the answer
+      model); the user restarted. 9a's run `20261022-123841-ae4f` (22/31) is interrupted and does not count.
+      Colab session 2 finished before that: final decisions + 4B scores in `20261022-123453-98c3` (PyMuPDF) and
+      `20261022-123714-e629` (Docling); Colab is disconnected for good. The trading skip for today was
+      re-created after the reboot (`/run/user/1000/systemd/user/trading-daily.service.d/skip-2026-10-22.conf`).
+      9a/9b rerun at 18:4x with a memory watchdog (`phase_s9.sh`) after the user closed VS Code's flux window
+      and Vivaldi.
+    - Browser QA done today: Ask follow-up live ("And for 2027?" → "Searched for: What is the growth outlook for
+      South Asia in 2027?", Ask as typed shown, conversation saved and listed at once).
+    - **Next: Colab session 2 for row 9.** Ask the user to run
+      `./rag llm colab --models qwen3:8b --worker qwen3-0.6b-gpu qwen3-4b --copy` in a new T4 cell and
+      connect. Phase A (qwen3:8b, decisions cached): `./rag eval --mode retrieval --set a b d --agent 3
+      --profile pymupdf-structure-embeddinggemma2 --rewrite decompose --label "M5 retrieval: PyMuPDF 8a +
+      multi-step (decisions)"` and the same for Docling's base. While qwen3:8b is loaded, QA Ask's
+      follow-up (conversation + "Searched for" + Ask as typed) in the browser. Phase B: unload qwen3:8b
+      (`remote.client().post_json("/api/chat", {"model": "qwen3:8b", "messages": [], "keep_alive": 0})`),
+      then the same two runs with `--rerank qwen3-4b`. Disconnect. Then scorecards 9a/9b
+      (`--agent 3 --rerank qwen3-4b --prompt v3 --ladder 9`).
+    - Then: QA still to do (Search lab Reranked column live, How it works 4 with a question, dark
+      theme, 768/1024/1440 widths, keyboard; findings so far M5-01..06 in the QA doc, 01-05 fixed);
+      write rows 8-9 + Set E into `docs/ladder.md` and `docs/steps/08-rewrite-agent.md` "Measured";
+      `./rag test` (last full run 507 passed; since then +~10 tests in test_context, test_rewrite_lab,
+      test_health, test_runs, all passing individually); UI typecheck + lint (clean at 14:00);
+      `git add`; HANDOFF M5 status; report; ask which techniques become defaults and whether to commit
+      `data/context/docling-structure-embeddinggemma2-ctx.jsonl`; suggest a commit message.
+    - **After M5, the user asked** to cut scope for M6-M8 and to be asked "a bunch of questions" with
+      time estimates per choice. Prepared options (hours of work, this laptop): answer model (keep
+      qwen3:1.7b 0 h / qwen3.5:4b already pulled ~1.5 h / + gemma4:e4b ~3 h / full Colab plan ~7 h);
+      judge + RAGAS + tracing (skip 0 h / judge on Colab ~3 h / + RAGAS ~6 h / + Phoenix ~8 h);
+      figures M7 (skip ~0.5 h / vision descriptions only ~5-6 h / both paths ~10 h); upload M8 (CLI
+      only ~1 h / browser upload to the default index ~4 h / full ~8 h); How it works 9-13 (text
+      only ~1.5 h / widgets for 9, 10, 13 ~4 h / all ~7 h); final QA (light ~1.5 h / full matrix ~3.5 h).
+    - Engine fixes today worth knowing: `OllamaClient.unload` + two-pass runs free our answer model
+      first; context job retries a timed-out batch and skips a rejected line; `MAX_LINE_CHARS` 720;
+      `paths.CONTEXT`; `indexes.overview` rows carry `contextual`; Settings/Health/Indexes UI fixes.
+  - Four empty runs `20261016-160027…160033` (0 of 31 questions, dead pids) are duplicate starts
+    from 2026-10-16; the app lists them as interrupted. They do not count.
+
+- **P1 + P2 code (2026-10-16 evening, staged; 359 tests pass):** `rerank.py` (specs with
+  pinned HF revisions, `LocalReranker`, `RemoteReranker`, `CachedScorer`),
+  `retrieve.run` (the one pipeline; Ask, evaluation and the lab share it),
+  two-pass evaluation when a reranker is on, MRR/recall@20 on old runs too,
+  `config_key` on canonical retrieval JSON (equivalence tested on all real runs),
+  `--rerank/--rerank-depth/--fresh-rerank`, `/api/rerankers`, Colab `worker.py`
+  (`/rerank`, `/worker`, loopback only, pinned models), gateway v2 (worker routes,
+  gzip requests with bomb cap, `Server-Timing`), `start.sh` step 4b and a
+  rerank-only mode (no Ollama), kept-alive remote client, 524 mapped.
+  **User chose (2026-10-16): finish P1 on Colab** (rows 6a-6f in one session).
+  **Rerank scores are cached** (`data/cache/rerank/`): a retrieval-only run on
+  Colab fills it and the scorecards replay the same scores with no Colab; each
+  result records hit/miss. `--fresh-rerank` forces a live call.
+  **Local 0.6B fp32 measured** (6 questions, 20 candidates, beside EmbeddingGemma 2):
+  depth 20: 39 s median (batch 4), 42 s (batch 8); depth 10: 15 s; peak RSS 5.95 GB
+  with the embedder, so `RERANK_LOAD_GB` = 4.0. bf16 was abandoned (slower, and
+  my test runs contaminated it); int8 not measured.
+
+- **P0 done (2026-10-16, staged):** `profiles.DEFAULT` = `docling-structure-embeddinggemma2`
+  (5d), `prompt.DEFAULT_VERSION` = v3, the `embed` role = EmbeddingGemma 2 (python).
+  `./rag ingest --profile` stays `baseline`; "not built" messages use
+  `profiles.build_command()`. The five tests that relied on the old defaults pin
+  baseline + v2. The UI reads `default_profile` (indexes) and `default` (prompts),
+  no hard-coded `baseline`/`v2`; Ask has a "no index" and a "not enough free
+  memory" empty state (`/api/status` gains `default_profile`, `build_command`,
+  `memory`). `./rag test`: 291 passed, 1 skipped. UI typecheck and lint clean.
+
+**The full build prompt is `docs/plans/m5.md`. Read it end to end, then start at
+P0.** Spec §17 M5: reranker, contextual retrieval, query rewriting, the agentic
+loop, chat memory; the Search lab's reranked column; How it works 4 and 8. Done
+when "global growth" (B4) is a Hit on 5d.
+
+Decisions made 2026-10-16 (don't re-ask):
+1. **5d is the app default** (Docling + structure + EmbeddingGemma 2, prompt v3,
+   dense, 20·3·2) and the base for rows 6-9.
+2. **Rows 6-9 run on both parsers:** 5c (PyMuPDF) and 5d (Docling).
+3. **Rewriting, follow-up rewriting, context lines and the agentic loop run on
+   Colab only** (Remote AI, `qwen3:8b`). The answer model stays local `qwen3:1.7b`.
+4. **The network is compressed and never waits on the tunnel:** gzip both ways,
+   keep-alive, batching on the runtime, pipelining.
+5. The prompt lives in `docs/plans/m5.md`.
+
+Approved pull: Qwen3-Reranker-0.6B (HF, 1.19 GB). Measure the gzip gateway on the
+next Colab session.
 
 ## Gotchas hit so far
 

@@ -24,6 +24,7 @@ is how "global growth" is known to sit at rank 11.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import secrets
@@ -34,13 +35,15 @@ from typing import Any, Callable
 
 import pymupdf
 
-from rag_studio import __version__, paths, profiles
+from rag_studio import __version__, paths, profiles, rerank as reranking, retrieve
 from rag_studio.answer import DEFAULT_K, GenerationSpec, ask, is_refusal
 from rag_studio.config import role_model
 from rag_studio.files import read_json, write_json_atomic
-from rag_studio.llm import OllamaClient
+from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
 from rag_studio.prompt import DEFAULT_VERSION, prompt_sha256
+from rag_studio.rerank import RerankError
 from rag_studio.retrieve import Retriever, SearchSpec, retriever as active_retriever
+from rag_studio.rewrite import RewriteBadOutput, RewriteUnavailable
 
 DEEP_K = 50          # how far down to look for the first answer page
 OUTCOMES = ("PASS", "REFUSED", "WRONG")
@@ -110,6 +113,18 @@ def _validate(name: str, data: Any) -> None:
                 raise GoldenError(f"{name} {qid}: an answerable question needs a document and its answer pages.")
             if any(not isinstance(p, int) or p < 1 for t in where for p in t["pages"]):
                 raise GoldenError(f"{name} {qid}: answer pages are 1-based PDF pages.")
+        hist = q.get("history")
+        if hist is not None and not (isinstance(hist, list) and hist and all(
+                isinstance(t, dict) and str(t.get("question", "")).strip() and str(t.get("answer", "")).strip()
+                for t in hist)):
+            raise GoldenError(f"{name} {qid}: 'history' is a list of recorded turns, each with a question and an answer.")
+        for key in ("standalone_expect", "standalone_forbid"):
+            terms = q.get(key)
+            if terms is not None and not (isinstance(terms, list) and terms and all(isinstance(x, str) and x for x in terms)):
+                raise GoldenError(f"{name} {qid}: '{key}' is a list of words the rewritten question must "
+                                  f"{'contain' if key == 'standalone_expect' else 'not contain'}.")
+        if (q.get("standalone_expect") or q.get("standalone_forbid")) and not hist:
+            raise GoldenError(f"{name} {qid}: a rewrite can only be checked for a question with a 'history'.")
         exp = q.get("expect")
         if not (exp is None or exp == "REFUSE" or (isinstance(exp, list) and exp
                                                    and all(_valid_fact(f) for f in exp))):
@@ -153,6 +168,18 @@ def first_answer_rank(hits: list[dict[str, Any]], where: list[dict[str, Any]]) -
             return None
         ranks.append(r)
     return max(ranks)
+
+
+def rewrite_ok(q: dict[str, Any], standalone: str | None) -> bool | None:
+    """Is a follow-up's rewritten question right? It must contain every word the
+    question's `standalone_expect` lists and none of its `standalone_forbid`
+    (case-insensitive substrings). None when the question has no history to rewrite
+    or was asked as typed. The rewrite is judged first, then retrieval, then the answer."""
+    if not q.get("history") or standalone is None:
+        return None
+    low = standalone.lower()
+    return (all(t.lower() in low for t in q.get("standalone_expect") or [])
+            and not any(t.lower() in low for t in q.get("standalone_forbid") or []))
 
 
 def fact_label(fact: Any) -> str:
@@ -202,10 +229,23 @@ class RunSpec:
     label: str | None = None
     ladder: dict[str, Any] | None = field(default=None)   # {"row": 1, "label": "Baseline"}
     search: dict[str, Any] = field(default_factory=lambda: {"method": "dense", "section_cap": None})
+    # Replay a reranker's remembered scores when the same question and passages
+    # were scored before (rerank.CachedScorer). Off for a fresh timing measurement.
+    rerank_cache: bool = True
+    # Follow-up questions (Set E) are searched as typed, without the rewrite: the table that shows what memory is worth.
+    as_typed: bool = False
 
     @property
     def search_spec(self) -> SearchSpec:
         return SearchSpec(**self.search)
+
+    @property
+    def two_pass(self) -> bool:
+        """Reranking (and, later, rewriting) holds models that must not sit in
+        memory beside the answer model's own, so every question is searched
+        first, those models are released, and then every question is answered.
+        A plain run keeps one question at a time, exactly as before."""
+        return self.search_spec.extended
 
 
 class RunBusy(RuntimeError):
@@ -266,6 +306,22 @@ def _config(spec: RunSpec, r: Retriever, client: OllamaClient) -> dict[str, Any]
     }
     if search.method != "dense":
         cfg["retrieval"]["word_index"] = r.word_index_info()
+    if search.rewrite:
+        from rag_studio import rewrite
+        cfg["retrieval"]["rewrite"] = rewrite.describe(search.rewrite)
+    if search.agent_rounds:
+        from rag_studio import agent
+        cfg["retrieval"]["agent"] = agent.describe(search.agent_rounds)
+        del cfg["retrieval"]["agent_rounds"]
+    if search.rewrite or search.agent_rounds:
+        cfg["runtime"] = {**(cfg.get("runtime") or {}), **_remote_runtime()}
+    if search.rerank:
+        # The component's stable description (model, revision, dtype, where,
+        # depth, instruction hash) replaces the bare id; measurements that
+        # vary (versions, threads) go under `runtime`, never `retrieval`.
+        cfg["retrieval"]["rerank"] = reranking.get(search.rerank).describe(search.rerank_depth)
+        del cfg["retrieval"]["rerank_depth"]
+        cfg["runtime"] = {**(cfg.get("runtime") or {}), **reranking.runtime_facts(search.rerank)}
     if spec.mode == "answer":
         gen = GenerationSpec(model=spec.model or role_model("answer"))
         info = client.model_info(gen.model)
@@ -279,6 +335,58 @@ def _config(spec: RunSpec, r: Retriever, client: OllamaClient) -> dict[str, Any]
     return cfg
 
 
+def ranking_stats(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """MRR and recall@20 over the questions that have an answer page, from the
+    deep search's `best_rank` (so runs made before M5 have them too), and the
+    same split by single-document and multi-document questions. A question
+    with no answer page does not count; with none counted, the value is None
+    (shown as "-", never 0)."""
+    def stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        rows = [x for x in rows if x["targets"]]
+        if not rows:
+            return {"n": 0, "mrr": None, "recall20": None}
+        return {"n": len(rows),
+                "mrr": round(sum(1 / x["best_rank"] for x in rows if x["best_rank"]) / len(rows), 4),
+                "recall20": sum(1 for x in rows if x["best_rank"] and x["best_rank"] <= 20)}
+    return {**stats(results),
+            "single": stats([x for x in results if len(x["targets"]) == 1]),
+            "multi": stats([x for x in results if len(x["targets"]) > 1])}
+
+
+def _rewrite_counts(results: list[dict[str, Any]]) -> dict[str, int] | None:
+    """How many follow-ups were rewritten right, of those that were rewritten; None when none were."""
+    rows = [x for x in results if x.get("rewrite_ok") is not None]
+    return {"ok": sum(1 for x in rows if x["rewrite_ok"]), "total": len(rows)} if rows else None
+
+
+def followup_stats(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Set E's chain, judged in order: of the follow-up questions, how many were
+    rewritten right, then found (a Hit), then answered right (a Pass). None
+    when the run asked no follow-up. `rewritten` is 0 when they were asked as typed."""
+    rows = [x for x in results if x.get("history")]
+    if not rows:
+        return None
+    scored = [x for x in rows if x.get("outcome") is not None]
+    return {"n": len(rows),
+            "rewritten": sum(1 for x in rows if x.get("rewrite_ok") is not None),
+            "rewrite_ok": sum(1 for x in rows if x.get("rewrite_ok")),
+            "hits": sum(1 for x in rows if x.get("hit_rank") is not None),
+            "scored": len(scored),
+            "passes": sum(1 for x in scored if x["outcome"] == "PASS")}
+
+
+def _remote_runtime() -> dict[str, Any]:
+    """What a run records about the runtime that wrote its rewrites and decisions: volatile facts, never `retrieval`."""
+    from rag_studio import remote
+    try:
+        if not remote.connected():
+            return {"remote_llm": {"runtime": "not connected: rewrites come from the cache"}}
+        gpu = (remote.client().gpu() or {}).get("gpus") or []
+        return {"remote_llm": {"gpu": gpu[0]["name"] if gpu else None, "model": "qwen3:8b"}}
+    except Exception:  # noqa: BLE001 - a record of the runtime must never fail the run
+        return {"remote_llm": {"runtime": "unknown"}}
+
+
 def summarize(results: list[dict[str, Any]], sets: list[str]) -> dict[str, Any]:
     recall = {}
     for sid in sets:
@@ -287,10 +395,13 @@ def summarize(results: list[dict[str, Any]], sets: list[str]) -> dict[str, Any]:
     scored = [x for x in results if x["outcome"] is not None]
     return {
         "recall": recall,
+        "ranking": ranking_stats(results),
         "outcomes": {o: sum(1 for x in scored if x["outcome"] == o) for o in OUTCOMES} if scored else None,
         "scored": len(scored),
         "questions": len(results),
         "errors": sum(1 for x in results if x.get("error")),
+        "rewrite": _rewrite_counts(results),
+        "followups": followup_stats(results),
         "answer_seconds": round(sum(x["timings"].get("generate_ms") or 0 for x in results) / 1000, 1),
     }
 
@@ -326,7 +437,7 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
         run = {
             "id": run_id or new_run_id(), "status": "running", "started_at": _now(),
             "finished_at": None, "label": spec.label, "ladder": spec.ladder,
-            "spec": asdict(spec), "config": _config(spec, r, client),
+            "spec": asdict(spec), "config": _config(spec, r, client) | _followup_config(spec, questions),
             "sets": {sid: {"name": all_sets[sid]["name"], "scored": all_sets[sid]["scored"]}
                      for sid in spec.sets},
             "progress": {"done": 0, "total": len(questions)},
@@ -337,19 +448,70 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
         if on_start:
             on_start()
         t_run = time.perf_counter()
-        for sid, q in questions:
-            if cancel and cancel():
-                run["status"] = "cancelled"
-                break
-            res = _one(sid, q, all_sets[sid]["scored"], spec, r, client)
-            run["results"].append(res)
-            run["progress"]["done"] += 1
+
+        def save(res_: dict[str, Any]) -> None:
             run["summary"] = summarize(run["results"], spec.sets)
             write_json_atomic(path, run)
             if on_result:
-                on_result(run, res)
-        else:
-            run["status"] = "done"
+                on_result(run, res_)
+
+        cancelled = False
+        try:
+            scorer = (reranking.scorer_for(reranking.get(spec.search_spec.rerank), cache=spec.rerank_cache)
+                      if spec.search_spec.rerank else None)
+            if spec.two_pass:
+                # Pass 1: search every question. Pass 2: answer them, with the
+                # search models released first. The answer model of the run
+                # before stays resident for Ollama's 5-minute keep-alive (about
+                # 5 GB here) and left too little memory for EmbeddingGemma 2 in
+                # back-to-back runs (2026-10-22): free it first. Only our own
+                # answer model is unloaded, never another app's.
+                if spec.mode == "answer" and hasattr(client, "unload"):
+                    try:
+                        client.unload(spec.model or role_model("answer"))
+                    except (OllamaUnavailable, OllamaError):
+                        pass
+                pending: list[tuple[dict[str, Any], dict[str, Any], retrieve.Found]] = []
+                for sid, q in questions:
+                    if cancel and cancel():
+                        cancelled = True
+                        break
+                    res, q_found = _search_one(sid, q, spec, r, scorer)
+                    run["results"].append(res)
+                    if not (spec.mode == "answer" and all_sets[sid]["scored"]):
+                        run["progress"]["done"] += 1
+                    else:
+                        pending.append((res, q, q_found))
+                    save(res)
+                if not cancelled and pending:
+                    release_search_models()
+                    for res, q, q_found in pending:
+                        if cancel and cancel():
+                            cancelled = True
+                            break
+                        _answer_one(res, q, spec, r, client, q_found)
+                        run["progress"]["done"] += 1
+                        save(res)
+            else:
+                for sid, q in questions:
+                    if cancel and cancel():
+                        cancelled = True
+                        break
+                    res, q_found = _search_one(sid, q, spec, r, scorer)
+                    if spec.mode == "answer" and all_sets[sid]["scored"]:
+                        _answer_one(res, q, spec, r, client, q_found)
+                    run["results"].append(res)
+                    run["progress"]["done"] += 1
+                    save(res)
+        except (RewriteUnavailable, RewriteBadOutput, RerankError) as e:
+            # Remote AI went away, or returned junk, mid-run: the run FAILS, with the questions it finished,
+            # rather than finishing as a run full of errors that looks like a result.
+            run.update(status="failed", error=str(e), finished_at=_now(),
+                       seconds=round(time.perf_counter() - t_run, 1))
+            run["summary"] = summarize(run["results"], spec.sets)
+            write_json_atomic(path, run)
+            raise
+        run["status"] = "cancelled" if cancelled else "done"
         run["finished_at"] = _now()
         run["seconds"] = round(time.perf_counter() - t_run, 1)
         run["summary"] = summarize(run["results"], spec.sets)
@@ -359,10 +521,37 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
         lock.release()
 
 
-def _one(sid: str, q: dict[str, Any], scored: bool, spec: RunSpec, r: Retriever,
-         client: OllamaClient) -> dict[str, Any]:
-    hits, found = r.search(q["question"], DEEP_K, spec.search_spec)
-    t = found["timings"]
+def _followup_config(spec: RunSpec, questions: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """How follow-up questions (Set E) were handled, recorded only when the run has any. Not part
+    of `retrieval`, so a run with Set E still sits in the same ladder variant as one without."""
+    if not any(q.get("history") for _, q in questions):
+        return {}
+    if spec.as_typed:
+        return {"followup": {"as_typed": True}}
+    from rag_studio import rewrite
+    return {"followup": rewrite.describe("standalone")}
+
+
+def release_search_models() -> None:
+    """Give back the memory the search models hold (EmbeddingGemma 2 and the
+    reranker), so the answer model has room."""
+    from rag_studio.embed import STModel
+    reranking.LocalReranker.release()
+    STModel.release()
+
+
+def _search_one(sid: str, q: dict[str, Any], spec: RunSpec, r: Retriever,
+                scorer: Any = None) -> tuple[dict[str, Any], retrieve.Found]:
+    """Search one question once, 50 deep, and score where the answer pages
+    ranked. The answer (if any) is written from this same retrieval."""
+    found = None
+    for kind, payload in retrieve.run(q["question"], retriever=r, k=spec.k, spec=spec.search_spec, deep=DEEP_K,
+                                      scorer=scorer, history=q.get("history"), as_typed=spec.as_typed):
+        if kind == "found":
+            found = payload
+    assert found is not None
+    t = found.timings
+    hits = found.hits
     top = hits[:spec.k]
     where = targets(q)
     res: dict[str, Any] = {
@@ -370,7 +559,8 @@ def _one(sid: str, q: dict[str, Any], scored: bool, spec: RunSpec, r: Retriever,
         "targets": where, "expect": q.get("expect"),
         "expect_labels": ([fact_label(f) for f in q["expect"]] if isinstance(q.get("expect"), list)
                           else q.get("expect")),
-        "hits": [{k: h.get(k) for k in ("rank", "chunk_id", "doc_id", "page", "score", "ranks", "capped")}
+        "hits": [{k: h.get(k) for k in ("rank", "chunk_id", "doc_id", "page", "score", "ranks", "capped",
+                                        "rerank_score")}
                  for h in top],
         "hit_rank": first_answer_rank(top, where),
         "best_rank": first_answer_rank(hits, where),
@@ -380,31 +570,40 @@ def _one(sid: str, q: dict[str, Any], scored: bool, spec: RunSpec, r: Retriever,
                     "search_ms": round(t.get("search_ms", 0) + t.get("bm25_ms", 0) + t.get("fuse_ms", 0), 1),
                     "generate_ms": None},
     }
-    if spec.mode == "answer" and scored:
-        done = None
-        for event, data in ask(q["question"], k=spec.k, model=spec.model, profile_id=spec.profile,
-                               prompt_version=spec.prompt_version, search=spec.search_spec,
-                               retriever=r, client=client):
-            if event in ("done", "error"):
-                done = (event, data)
-        assert done is not None
-        event, data = done
-        if event == "error":
-            res["error"] = data["error"]
-        else:
-            # The answer path searched again with k; it must have seen the same
-            # passages this row reports, or the row would describe one search
-            # and score another.
-            seen = [s["chunk_id"] for s in data["sources"]]
-            if seen != [h["chunk_id"] for h in top]:
-                res["error"] = "The answer used different passages from the scored search."
-            res["answer"] = data["answer"]
-            res["citations"] = data["citations"]
-            res["usage"] = data["usage"]
-            res["timings"]["generate_ms"] = next(
-                (s["ms"] for s in data["trace"] if s["id"] == "generate"), None)
-            res.update(score_answer(q.get("expect"), data["answer"]))
-    return res
+    if found.before_rerank is not None:
+        res["timings"]["rerank_ms"] = round(t["rerank_ms"], 1)
+        step = next(s for s in found.steps if s.id == "rerank")
+        res["rerank"] = {"before_rank": first_answer_rank(found.before_rerank, where),
+                         "after_rank": res["best_rank"], "cache": step.detail.get("cache"),
+                         "compute_ms": step.detail.get("compute_ms")}
+    for key in ("rewrites", "rounds", "agent", "network", "standalone_question", "cache"):
+        if getattr(found, key) is not None:
+            res[key] = getattr(found, key)
+    if q.get("history"):
+        res["history"] = q["history"]
+        res["rewrite_ok"] = rewrite_ok(q, found.standalone_question)
+    return res, found
+
+
+def _answer_one(res: dict[str, Any], q: dict[str, Any], spec: RunSpec, r: Retriever, client: OllamaClient,
+                found: retrieve.Found) -> None:
+    done = None
+    for event, data in ask(q["question"], k=spec.k, model=spec.model, profile_id=spec.profile,
+                           prompt_version=spec.prompt_version, search=spec.search_spec,
+                           retriever=r, client=client, found=found, history=q.get("history"),
+                           as_typed=spec.as_typed):
+        if event in ("done", "error"):
+            done = (event, data)
+    assert done is not None
+    event, data = done
+    if event == "error":
+        res["error"] = data["error"]
+        return
+    res["answer"] = data["answer"]
+    res["citations"] = data["citations"]
+    res["usage"] = data["usage"]
+    res["timings"]["generate_ms"] = next((s["ms"] for s in data["trace"] if s["id"] == "generate"), None)
+    res.update(score_answer(q.get("expect"), data["answer"]))
 
 
 def mark_failed(run_id: str, error: str) -> None:
@@ -435,14 +634,30 @@ LADDER: list[dict[str, Any]] = [
 ]
 
 
-def config_key(cfg: dict[str, Any]) -> tuple:
-    """What must match for two runs to sit in one ladder row."""
+def retrieval_key(cfg: dict[str, Any]) -> str:
+    """The retrieval setup as canonical JSON, minus the word index's own facts
+    (they change with every rebuild of the same setup). Every switch a run
+    records under `retrieval` is part of it, so a new switch separates runs
+    without anyone editing this function."""
+    retrieval = {k: v for k, v in (cfg.get("retrieval") or {}).items() if k != "word_index"}
+    return json.dumps(retrieval or {"method": "dense"}, sort_keys=True, separators=(",", ":"))
+
+
+def _legacy_key(cfg: dict[str, Any]) -> tuple:
+    """The key until M4: the method and the section limit were the only
+    retrieval switches. Kept so a test can prove the new key groups every
+    earlier run exactly as this one did."""
     index = cfg.get("index") or {}
     answer = cfg.get("answer") or {}
     retrieval = cfg.get("retrieval") or {}
     return (index.get("table"), (index.get("embedding") or {}).get("digest"), cfg.get("k"),
             answer.get("model"), answer.get("digest"), answer.get("prompt_sha256"),
             retrieval.get("method", "dense"), retrieval.get("section_cap"))
+
+
+def config_key(cfg: dict[str, Any]) -> tuple:
+    """What must match for two runs to sit in one ladder row."""
+    return _legacy_key(cfg)[:-2] + (retrieval_key(cfg),)
 
 
 def tag_ladder(run_id: str, row: int, label: str | None = None) -> dict[str, Any]:
@@ -490,6 +705,12 @@ def variant_key(cfg: dict[str, Any]) -> tuple:
     return (((cfg.get("index") or {}).get("profile")),) + config_key(cfg)[1:]
 
 
+def _variant_ranking(tagged: list[dict[str, Any]], per_set: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """MRR and recall@20 over the runs each set's numbers came from."""
+    rows = [x for r in tagged for x in r["results"] if per_set.get(x["set"], {}).get("run_id") == r["id"]]
+    return ranking_stats(rows)
+
+
 def _variant(label: str, tagged: list[dict[str, Any]]) -> dict[str, Any]:
     per_set: dict[str, dict[str, Any]] = {}
     used: list[dict[str, Any]] = []
@@ -506,7 +727,7 @@ def _variant(label: str, tagged: list[dict[str, Any]]) -> dict[str, Any]:
             }
             if r not in used:
                 used.append(r)
-    return {"label": label, "sets": per_set,
+    return {"label": label, "sets": per_set, "ranking": _variant_ranking(tagged, per_set),
             "runs": [{"id": r["id"], "label": r.get("label"), "started_at": r["started_at"]} for r in used],
             "config": _brief(used[0]["config"]) if used else None,
             "mixed": len({config_key(r["config"]) for r in used}) > 1}
@@ -584,6 +805,9 @@ def list_runs() -> list[dict[str, Any]]:
             continue
         if run["status"] == "running" and not active:
             run["status"] = "interrupted"
+        for r in run.get("results", []):
+            _upgrade_row(r)
+        _upgrade_summary(run)
         out.append({k: run.get(k) for k in ("id", "status", "started_at", "finished_at", "label",
                                             "ladder", "spec", "sets", "progress", "summary",
                                             "seconds", "error")}
@@ -598,7 +822,20 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     if run:
         for r in run.get("results", []):
             _upgrade_row(r)
+        _upgrade_summary(run)
     return run
+
+
+def _upgrade_summary(run: dict[str, Any]) -> None:
+    """Runs saved before M5 have no MRR or recall@20; they follow from the
+    per-question `best_rank` every run has always recorded."""
+    summary = run.get("summary")
+    if summary is not None and "ranking" not in summary:
+        for r in run.get("results", []):
+            r.setdefault("targets", [])
+        summary["ranking"] = ranking_stats(run.get("results", []))
+    if summary is not None and "followups" not in summary:
+        summary["followups"] = followup_stats(run.get("results", []))
 
 
 def _upgrade_row(r: dict[str, Any]) -> None:
@@ -611,11 +848,46 @@ def _upgrade_row(r: dict[str, Any]) -> None:
         exp = r.get("expect")
         r["expect_labels"] = [fact_label(f) for f in exp] if isinstance(exp, list) else exp
     r.setdefault("category", None)
+    for key in ("rewrites", "rounds", "agent", "network", "rerank", "standalone_question", "cache"):
+        r.setdefault(key, None)
+
+
+def _rerank_label(retrieval: dict[str, Any]) -> str | None:
+    rr = retrieval.get("rerank")
+    if not rr:
+        return None
+    return f"{rr['id']} (top {rr['depth']})" if isinstance(rr, dict) else str(rr)
+
+
+def _technique(retrieval: dict[str, Any]) -> str | None:
+    """decompose, multi or hyde: a run records the full description, a search spec the bare name."""
+    rw = retrieval.get("rewrite")
+    return rw.get("technique") if isinstance(rw, dict) else rw
+
+
+def _agent_rounds(retrieval: dict[str, Any]) -> int | None:
+    """The multi-step search's round limit: a run records it under `agent`, a search spec as `agent_rounds`."""
+    agent = retrieval.get("agent")
+    return agent.get("rounds") if isinstance(agent, dict) else retrieval.get("agent_rounds")
+
+
+def _rerank_name(retrieval: dict[str, Any]) -> str | None:
+    """The reranker as the pickers name it ("Remote AI · 4B"), or its id if the app no longer knows it."""
+    rr = retrieval.get("rerank")
+    if not rr:
+        return None
+    rid = rr.get("id") if isinstance(rr, dict) else str(rr)
+    spec = reranking.RERANKERS.get(rid)
+    return spec.label if spec else rid
 
 
 def _brief(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The setup in a few display fields (run history, the ladder, a comparison). Never used to group runs."""
     index = cfg.get("index") or {}
     answer = cfg.get("answer") or {}
+    retrieval = cfg.get("retrieval") or {}
+    rr = retrieval.get("rerank")
+    followup = cfg.get("followup")
     return {"mode": cfg.get("mode"), "k": cfg.get("k"), "profile": index.get("profile"),
             "index_label": index.get("label"), "table": index.get("table"),
             "parser": (index.get("config") or {}).get("parser"),
@@ -623,5 +895,12 @@ def _brief(cfg: dict[str, Any]) -> dict[str, Any]:
             "embedding_model": (index.get("embedding") or {}).get("model"),
             "retrieval": (cfg.get("retrieval") or {}).get("method"),
             "section_cap": (cfg.get("retrieval") or {}).get("section_cap"),
+            "rerank": _rerank_label(retrieval),
+            "rerank_name": _rerank_name(retrieval),
+            "rerank_depth": (rr.get("depth") if isinstance(rr, dict) else retrieval.get("rerank_depth")) if rr else None,
+            "rewrite": _technique(retrieval),
+            "agent_rounds": _agent_rounds(retrieval),
+            "followup": None if not followup else "as typed" if followup.get("as_typed") else "rewritten",
+            "contextual": bool((index.get("config") or {}).get("contextual")),
             "answer_model": answer.get("model"), "prompt_version": answer.get("prompt_version")}
 

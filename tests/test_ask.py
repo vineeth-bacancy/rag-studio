@@ -11,7 +11,7 @@ from tests.fakes import FakeOllama
 def setup(tmp_data):
     fake = FakeOllama(answer="GPO staff visited 166 libraries [1][2]. Also [9].")
     ingest.build(profiles.BASELINE, client=fake)
-    return fake, retrieve.Retriever(profiles.DEFAULT, client=fake)
+    return fake, retrieve.Retriever(profiles.BASELINE.id, client=fake)
 
 
 def test_event_order_and_citations(setup):
@@ -32,7 +32,7 @@ def test_event_order_and_citations(setup):
 
 def test_the_model_is_called_with_the_baseline_settings(setup):
     fake, r = setup
-    answer.answer("Q?", retriever=r, client=fake)
+    answer.answer("Q?", retriever=r, client=fake, prompt_version="v2")
     call = fake.chats[-1]
     assert call["think"] is False
     assert call["options"] == {"temperature": 0.0, "num_ctx": 8192}

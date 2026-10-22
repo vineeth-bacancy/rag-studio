@@ -10,6 +10,7 @@ comes back, so each upgrade has to earn its place.
 | A | your 9 + traps T1, T2 | yes | the main scorecard (spec §7) |
 | B | 6 | retrieval only | single facts stated on several pages |
 | D | 11 + traps T3-T5 | yes | edge cases: near-miss numbers, arithmetic, table cells, a flattened table, a paraphrase, typos, Spanish, two documents at once, a false premise, an instruction override, a wrong product, a wrong year |
+| E | 8 follow-ups (M5) | yes | conversation memory: each question is asked after a recorded first turn and only makes sense with it ("And for 2027?"), including a refusal and a change of subject |
 
 Set C (figures) arrives in M7, after its answer is confirmed from the chart's
 drawing commands. Every Set D answer was found in the extracted text, and every
@@ -17,6 +18,14 @@ page that states it is listed (`scripts/find_pages.py`, e.g.
 `.venv/bin/python scripts/find_pages.py gpo 'net income' 100`). D3's key was widened on 2026-10-15: page 44
 calls the *adjusted* figure plain "net income", so a $17.9M decrease is as
 right as $6.3M.
+
+Set E is **remote-only** (`"remote_only": true` in `set_e.json`): Remote AI
+(qwen3:8b on Colab) rewrites each follow-up into a question that stands alone
+before it is searched. `./rag eval` with no `--set` runs A, B and D only; name
+Set E on purpose (`--set e`). `--as-typed` searches each follow-up exactly as
+written instead, with no Remote AI at all: the run that shows what memory is
+worth. The Evaluation page says "needs Remote AI" beside Set E and will not
+start it without a connection unless "Ask follow-ups as typed" is on.
 
 ## The scorecard (`rag_studio/eval.py`)
 
@@ -33,20 +42,87 @@ Keyword scoring checks that facts are present, not that every claim is
 supported: A1 passes while also claiming "166 reflects the 3-year total".
 The faithfulness judge (DeepEval, M6) is what catches that.
 
+**Set E is judged in order: the rewrite, then retrieval, then the answer.**
+Each follow-up lists words its rewritten question must contain
+(`standalone_expect`, e.g. "South Asia" and "2027") and words it must not
+(`standalone_forbid`: the topic switch from GPO to the iMac stand must not
+carry GPO over). The run's summary keeps the chain
+(`summary.followups`: rewritten right, then found, then answered right), and
+the Evaluation page shows it as its own table, because it measures the
+conversation's memory, not the search.
+
+## Ranking beyond the top 5 (M5)
+
+Every run searches 50 deep, so beside recall@5 it reports, over the questions
+that have answer pages:
+
+- **MRR** (mean reciprocal rank): the average of 1 / rank of the first answer
+  page, 0 for a question whose page is not in the top 50. 1.0 means every
+  answer page was at rank 1.
+- **recall@20**: how many questions have an answer page in the top 20, the
+  pool a reranker reads.
+- both again for questions about **one document** and questions that need
+  **two** (D's cross-document question), because a two-document question only
+  counts once both pages are in.
+
+They come from the per-question `best_rank` every run has recorded since M1, so
+runs made before M5 show them too (computed when the run is read; the file is
+not rewritten). A question with no answer page does not count; with none
+counted, the value is "-", never 0.
+
 ## Runs
 
 A run is test questions × one configuration. It records the index build,
 embedding digest, answer model and digest, options, prompt version and hash,
 and every question's passages, answer and timings. It is saved after every
 question (`data/runs/`), one run at a time across the CLI and the browser (a
-file lock). `./rag eval --set a b --ladder 1` or the Evaluation page.
+file lock). `./rag eval --set a b --profile baseline --prompt v2 --ladder 1` or the Evaluation page.
 
 The results are in [`docs/ladder.md`](../ladder.md).
 
 `--profile` chooses the index (`baseline`, `pymupdf-clean`, `docling-clean`)
 and `--prompt` the prompt version; both are recorded.
 
+### Runs with M5's switches
+
+`--rerank ID`, `--rewrite decompose|multi|hyde` and `--agent ROUNDS` (the
+Evaluation page's Reranker, Query rewriting and Multi-step search) are each
+recorded under `config.retrieval` as the component's full, stable description:
+model, Hugging Face revision or Ollama digest, dtype, where it runs, prompt or
+instruction version and sha256, depth, `num_ctx`. Facts that change between
+runs of one setup (whether Remote AI was connected, its GPU) go under
+`config.runtime`, never `retrieval`, so they never split a ladder variant.
+
+**A run with any of them searches in two passes.** Pass 1 searches every
+question (rewrite, each search, fusion, the reranker); then the reranker and
+EmbeddingGemma 2 are released; pass 2 answers every question from the
+passages pass 1 found. The answer is always written from the same search that
+was scored, and the answer model never shares memory with the search models.
+
+**Remote outputs are remembered.** Reranker scores (`data/cache/rerank/`), and
+rewrites, follow-up rewrites and multi-step decisions (the remote output cache)
+are kept by exactly what was asked. A retrieval-only run on Colab fills them,
+and the scorecard that follows replays the same values with no Colab at all;
+each question records `cache: hit | miss` per step. `--fresh-rerank` scores
+again for a timing. If Remote AI goes away mid-run and a value is not
+remembered, the run **fails** with the questions it finished, rather than
+finishing as a run full of errors.
+
+**What a run shows per question** (open a question on the Evaluation page,
+"How it was searched"): for a follow-up, the earlier turn and "Searched for: …"
+with whether the rewrite was right; for rewriting, the phrasings, parts or
+drafted passage; for multi-step search, each round (the normal search, then
+each new query, the document it was limited to, how many new passages it
+added, the controller's one-sentence reason) and why it stopped (enough
+evidence, the round limit, the time or token budget, a repeated query, or bad
+output); for the reranker, where the first answer page was before and after
+reranking and whether the scores were remembered. A Remote AI call shows its
+network time against the runtime's time.
+
 ## The ladder has variants (M2)
+
+Each variant's line names its setup (index, search, rewriting, multi-step
+search, reranker, answer model, prompt) and, since M5, its MRR and recall@20.
 
 A ladder row is one change from the row above, but a row can hold more than one
 way of making that change: row 2 has **PyMuPDF + cleaning** and **Docling +

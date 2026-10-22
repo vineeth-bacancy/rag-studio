@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_studio import colab, remote
+from rag_studio import colab, remote, rerank
 
 ROOT = Path(__file__).resolve().parent.parent
 START = ROOT / "tools" / "colab" / "start.sh"
@@ -364,7 +364,7 @@ def test_gpu_residency_matches_the_exact_tag(tmp_path):
 
 def test_the_lock_is_proved_on_loopback_before_the_tunnel_starts():
     text = START.read_text()
-    assert text.index('LOCAL_UNAUTH="$(http_code') < text.index("nohup cloudflared")
+    assert text.index('LOCAL_UNAUTH="$(http_code') < text.index("daemon cloudflared")
     assert "Refusing to expose it" in text
 
 
@@ -383,3 +383,173 @@ def test_waiting_gives_up_at_the_deadline():
     t = time.monotonic()
     r = _sh("wait_for_http http://127.0.0.1:9/ 3 200")
     assert r.stdout == "000" and time.monotonic() - t < 15
+
+
+# --------------------------------------------------------------------------- M5: worker, compression, keep-alive
+
+@pytest.fixture
+def worker_runtime():
+    """A rerank-only runtime: the real gateway and the real worker on loopback,
+    the worker's model replaced by a stand-in, and no Ollama at all."""
+    wspec = importlib.util.spec_from_file_location("wk", ROOT / "tools/colab/worker.py")
+    wk = importlib.util.module_from_spec(wspec)
+    wspec.loader.exec_module(wk)
+
+    class Engine(wk.Engine):
+        def _load(self, model_id):
+            self.current, self.last_load_s = model_id, 0.1
+            self.swaps.append({"to": model_id, "at": "now", "seconds": 0.1})
+
+        def _predict(self, spec, instruction, query, documents, max_length):
+            return [float(len(d)) for d in documents]
+
+        def _peak_mb(self):
+            return 4321
+
+    engine = Engine(downloaded={"qwen3-4b"})
+    engine.current = "qwen3-4b"
+    wd = wk.serve(engine, 0)
+    threading.Thread(target=wd.serve_forever, daemon=True).start()
+    gspec = importlib.util.spec_from_file_location("gw2", ROOT / "tools/colab/server.py")
+    gw = importlib.util.module_from_spec(gspec)
+    gspec.loader.exec_module(gw)
+    token = remote.mint_token()
+    gw.Config.token, gw.Config.require_token = token, True
+    gw.Config.worker = f"http://127.0.0.1:{wd.server_address[1]}"
+    gw.Config.ollama = "http://127.0.0.1:9"          # nothing listens: no Ollama on this runtime
+    gw.Handler._done = lambda *a, **k: None
+    door = ThreadingHTTPServer(("127.0.0.1", 0), gw.Handler)
+    threading.Thread(target=door.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{door.server_address[1]}", token
+    remote.close_clients()
+    door.shutdown()
+    wd.shutdown()
+
+
+def test_a_rerank_only_runtime_connects_tests_and_reports_its_worker(worker_runtime):
+    url, token = worker_runtime
+    result = remote.connect(code=remote.encode_connect_code(url, token))
+    assert result["ok"], result
+    assert result["embedded"] == [] and result["chatted"] == []
+    assert result["worker"] == {"loaded": "qwen3-4b", "served": ["qwen3-4b"]}
+    assert result["missing"] == []                   # a rerank-only runtime is not told it lacks embedders
+    info = remote.probe()
+    assert info["reachable"] and info["worker"]["loaded"] == "qwen3-4b" and info["models"] == []
+    assert remote.connection()["rerankers"] == ["qwen3-4b"]
+
+
+def test_the_remote_reranker_scores_through_the_gateway_and_the_numbers_are_recorded(worker_runtime):
+    url, token = worker_runtime
+    remote.connect(code=remote.encode_connect_code(url, token))
+    c = remote.client()
+    scorer = rerank.RemoteReranker(rerank.RERANKERS["qwen3-4b"], c)
+    docs = [("passage %d " % i) * 40 for i in range(20)]            # about 8 KB of text
+    before = c.stats.snapshot()
+    scores = scorer.score("What?", docs)
+    assert scores == [float(len(d)) for d in docs]
+    used = {k: c.stats.snapshot()[k] - before[k] for k in before}
+    assert used["calls"] == 1 and used["bytes_out_wire"] < used["bytes_out_raw"] / 3       # gzipped on the way up
+    assert used["server_ms"] > 0 and used["wall_ms"] >= used["server_ms"]
+    assert scorer.last["max_memory_mb"] == 4321 and scorer.last["dtype"] == "float16"
+
+
+def test_one_connection_serves_every_call(worker_runtime):
+    url, token = worker_runtime
+    remote.connect(code=remote.encode_connect_code(url, token))
+    c = remote.client()
+    assert remote.client() is c                                      # one client per runtime
+    base = c.stats.snapshot()["connections"]
+    for _ in range(20):
+        c.get_json("/worker")
+    assert c.stats.snapshot()["connections"] - base <= 1             # keep-alive: at most the first opened one
+
+
+def test_connecting_elsewhere_or_disconnecting_closes_the_old_client(worker_runtime):
+    url, token = worker_runtime
+    remote.connect(code=remote.encode_connect_code(url, token))
+    old = remote.client()
+    remote.disconnect()
+    assert old._http is None and not remote._clients
+
+
+def test_the_tunnels_100_second_limit_has_its_own_message():
+    class Tunnel(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            body = b"<!DOCTYPE html><html>A timeout occurred</html>"
+            self.send_response(524)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Tunnel)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    from rag_studio.llm import OllamaClient, OllamaUnavailable
+    c = OllamaClient(f"http://127.0.0.1:{srv.server_address[1]}", token="t" * 48, remote=True)
+    try:
+        with pytest.raises(OllamaUnavailable, match="100 s limit. Send a smaller batch") as e:
+            c.post_json("/rerank", {"documents": ["x"]})
+        assert e.value.kind == "timeout"
+    finally:
+        c.close()
+        srv.shutdown()
+
+
+def test_the_remote_read_timeout_is_under_the_tunnels_limit():
+    from rag_studio import llm
+    assert llm.REMOTE_MODEL_TIMEOUT.read < 100
+
+
+def test_what_a_runtime_needs_is_split_by_purpose():
+    needs = remote.needed_by_purpose()
+    assert set(needs) == {"indexes", "roles", "worker"}
+    assert "qwen3-embedding:8b" in needs["indexes"] and "qwen3-4b" in needs["worker"]
+
+
+def test_a_rerank_cell_installs_no_ollama_and_pins_the_laptops_libraries():
+    cell = colab.build_cell(models=[], worker=["qwen3-0.6b-gpu", "qwen3-4b"])
+    assert "MODELS = ''" in cell and "WORKER = 'qwen3-0.6b-gpu,qwen3-4b'" in cell
+    assert "sentence-transformers==" in cell and '"--worker", WORKER' in cell
+    with pytest.raises(ValueError, match="not a reranker"):
+        colab.build_cell(models=[], worker=["gpt-4"])
+    assert len(colab.PAYLOAD_FILES) == 3 and "worker.py" in colab.PAYLOAD_FILES
+
+
+def test_the_keep_alive_cell_is_valid_and_bounded():
+    cell = colab.build_keepalive_cell(120)
+    compile(cell, "k", "exec")
+    assert "keep_alive(interval=120)" in cell and "/rerank" in cell
+    for bad in (5, 5000):
+        with pytest.raises(ValueError):
+            colab.build_keepalive_cell(bad)
+
+
+def test_the_setup_cell_keeps_itself_running_by_default():
+    on = colab.build_cell(models=[], worker=["qwen3-4b"])
+    off = colab.build_cell(models=[], worker=["qwen3-4b"], keep_alive=False)
+    assert "KEEP_ALIVE = True" in on and "KEEP_ALIVE = False" in off
+    assert "keep_alive()" in on and on.rstrip().endswith("keep_alive()")
+
+
+def test_the_keep_alive_never_clears_the_cells_output_and_says_where_to_connect():
+    """An earlier version cleared the output every tick and erased the URL."""
+    for cell in (colab.build_keepalive_cell(), colab.build_cell(models=[], worker=["qwen3-4b"])):
+        assert "clear_output" not in cell
+        assert "handle.update(Pretty(text))" in cell and "./rag llm connect" in cell and ".rag_url" in cell
+    compile(colab.build_keepalive_cell(), "k", "exec")
+
+
+def test_every_service_start_sh_launches_survives_the_stop_button():
+    """The notebook's stop button interrupts the cell's process group. Services
+    started with plain nohup died with it (found live, 2026-10-16); each must be
+    launched through `daemon`, which gives it its own session."""
+    text = START.read_text()
+    launches = [ln for ln in text.splitlines() if ln.rstrip().endswith("&") and ("serve" in ln or "worker.py" in ln
+                or "server.py" in ln or "cloudflared tunnel" in ln) or ln.strip().startswith("RAG_STUDIO_TOKEN=")]
+    assert launches and all("daemon " in ln for ln in launches), launches
+    assert "setsid nohup" in text
+    r = _sh("daemon sleep 0 && echo started")
+    assert r.returncode == 0 and "started" in r.stdout

@@ -46,6 +46,10 @@ class FakeOllama:
     def resident(self) -> list:
         return []
 
+    def unload(self, model: str) -> bool:
+        self.unloaded = [*getattr(self, "unloaded", []), model]
+        return True
+
     def gpu(self) -> dict[str, Any]:
         return {"available": True, "gpus": [{"name": "Tesla T4", "memory_total_mb": 15360,
                                               "memory_used_mb": 1000, "utilization_pct": 0}]}

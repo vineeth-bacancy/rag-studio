@@ -24,6 +24,14 @@ This process is the only thing that does, and it is deliberately small:
   at about 90 KB/s (measured 2026-10-15: 8.4 s on the T4, 29.7 s round trip).
   Cloudflare compresses only its own leg to the laptop, so the gateway
   compresses the runtime's leg itself.
+* **Requests may be gzipped** (`Content-Encoding: gzip`): a batch of passages is
+  mostly text and compresses well, and the tunnel's upload leg is the slow one.
+  The body is inflated under the same 8 MB cap, so a compression bomb gets a
+  413; corrupt data a 400; any other encoding a 415. What is forwarded is plain.
+* **Two more allowlisted routes go to the worker** (worker.py, loopback only):
+  `POST /rerank` and `GET /worker`. Same token, same cap, same 404-before-auth.
+* **Every forwarded reply carries `Server-Timing`**, the time the upstream took,
+  so the laptop can tell tunnel time from GPU time.
 * **No CORS headers.** A web page must never be able to call this from a
   browser; the only client is the RAG Studio engine on the laptop.
 
@@ -47,16 +55,21 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SERVICE = "rag-studio-gateway"
-VERSION = "1"
+VERSION = "2"
 
 # Every path this gateway serves, by method. Anything else is a 404 before the
 # token is considered and before a body is read.
 FORWARD_GET = ("/api/version", "/api/tags", "/api/ps")
 FORWARD_POST = ("/api/chat", "/api/embed", "/api/embeddings")
 OWN_GET = ("/api/gpu",)
+# The worker (tools/colab/worker.py), behind the same lock. Declared explicitly,
+# never "everything under /worker": a new route is a decision.
+WORKER_POST = ("/rerank", "/context")
+WORKER_GET = ("/worker",)
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 # How much of an over-large body is read and thrown away so the client gets
@@ -71,6 +84,9 @@ class Config:
     ollama = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     token = os.environ.get(TOKEN_ENV, "")
     upstream_timeout = float(os.environ.get("UPSTREAM_TIMEOUT", "900"))
+    worker = os.environ.get("WORKER_URL", "http://127.0.0.1:8001").rstrip("/")
+    # Under the tunnel's 100 s limit (HTTP 524), so a slow job is told so by us.
+    worker_timeout = float(os.environ.get("WORKER_TIMEOUT", "90"))
     require_token = True
 
 
@@ -96,8 +112,9 @@ def gpu_info() -> dict:
         return {"available": False, "reason": str(exc)[:120]}
 
 
-def upstream(method: str, path: str, body: bytes | None, timeout: float) -> tuple[int, bytes, str]:
-    req = urllib.request.Request(f"{Config.ollama}{path}", data=body, method=method,
+def upstream(method: str, path: str, body: bytes | None, timeout: float,
+             base: str | None = None) -> tuple[int, bytes, str]:
+    req = urllib.request.Request(f"{base or Config.ollama}{path}", data=body, method=method,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -120,10 +137,13 @@ def _shape(payload: dict, raw: bytes) -> str:
     """What the log may say about a request: its size and shape, never its text."""
     inputs = payload.get("input")
     count = len(inputs) if isinstance(inputs, list) else (1 if inputs else 0)
+    documents = payload.get("documents")
     messages = payload.get("messages")
     parts = [f"model={payload.get('model')}", f"in={len(raw)}B"]
     if count:
         parts.append(f"inputs={count}")
+    if isinstance(documents, list):
+        parts.append(f"documents={len(documents)}")
     if isinstance(messages, list):
         parts.append(f"messages={len(messages)}")
     return " ".join(parts)
@@ -138,7 +158,8 @@ class Handler(BaseHTTPRequestHandler):
         """Silenced: `_done` logs what is safe to log."""
         del format, args
 
-    def _send(self, status: int, payload: bytes, content_type: str = "application/json") -> None:
+    def _send(self, status: int, payload: bytes, content_type: str = "application/json",
+              server_ms: float | None = None) -> None:
         accepts = self.headers.get("Accept-Encoding", "")
         gzipped = len(payload) >= GZIP_MIN_BYTES and "gzip" in accepts.lower()
         if gzipped:
@@ -150,6 +171,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        if server_ms is not None:
+            self.send_header("Server-Timing", f"upstream;dur={server_ms:.1f}")
         self.end_headers()
         try:
             self.wfile.write(payload)
@@ -187,7 +210,26 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_BODY_BYTES:
             self._drain(length)
             return None
-        return self.rfile.read(length)
+        raw = self.rfile.read(length)
+        encoding = self.headers.get("Content-Encoding", "identity").strip().lower()
+        if encoding in ("", "identity"):
+            return raw
+        if encoding != "gzip":
+            self._encoding_error = (415, f"Content-Encoding {encoding!r} is not supported; send gzip or nothing")
+            return None
+        # Inflated under the same cap: a few KB of zeros must not become gigabytes.
+        inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+        try:
+            out = inflater.decompress(raw, MAX_BODY_BYTES + 1)
+            if inflater.unconsumed_tail or len(out) > MAX_BODY_BYTES:
+                return None
+            out += inflater.flush()
+        except zlib.error:
+            self._encoding_error = (400, "the request body is not valid gzip")
+            return None
+        return out if len(out) <= MAX_BODY_BYTES else None
+
+    _encoding_error: tuple[int, str] | None = None
 
     def _drain(self, length: int) -> None:
         if length > DRAIN_CAP_BYTES:
@@ -222,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
             # process is alive without learning which models it holds.
             self._json(200, {"ok": True, "service": SERVICE, "version": VERSION})
             return self._done(200, 0, started)
-        if path not in FORWARD_GET + OWN_GET:
+        if path not in FORWARD_GET + OWN_GET + WORKER_GET:
             return self._not_served(started)
         if not self._authorised():
             return self._unauthorised(started)
@@ -230,21 +272,28 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps({"gpu": gpu_info(), "service": SERVICE, "version": VERSION}).encode()
             self._send(200, body)
             return self._done(200, len(body), started)
-        status, payload, ctype = upstream("GET", path, None, 30)
-        self._send(status, payload, ctype)
+        t = time.time()
+        if path in WORKER_GET:
+            status, payload, ctype = upstream("GET", path, None, 30, Config.worker)
+        else:
+            status, payload, ctype = upstream("GET", path, None, 30)
+        self._send(status, payload, ctype, server_ms=(time.time() - t) * 1000)
         return self._done(status, len(payload), started)
 
     def do_POST(self):  # noqa: N802 - base class API
         started = time.time()
         path = self._path()
-        if path not in FORWARD_POST:
+        if path not in FORWARD_POST + WORKER_POST:
             return self._not_served(started)
         if not self._authorised():
             return self._unauthorised(started)
         raw = self._read_body()
         if raw is None:
-            self._json(413, {"error": f"the request body is larger than {MAX_BODY_BYTES} bytes"})
-            return self._done(413, 0, started)
+            status, message = self._encoding_error or (413, f"the request body is larger than {MAX_BODY_BYTES} bytes")
+            self._encoding_error = None
+            self.close_connection = status != 413 or self.close_connection
+            self._json(status, {"error": message})
+            return self._done(status, 0, started)
         try:
             payload = json.loads(raw or b"{}")
             if not isinstance(payload, dict):
@@ -254,8 +303,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._done(400, 0, started)
         if path == "/api/chat":
             payload["stream"] = False
-        status, body, ctype = upstream("POST", path, json.dumps(payload).encode(), Config.upstream_timeout)
-        self._send(status, body, ctype)
+        t = time.time()
+        if path in WORKER_POST:
+            status, body, ctype = upstream("POST", path, json.dumps(payload).encode(), Config.worker_timeout,
+                                           Config.worker)
+        else:
+            status, body, ctype = upstream("POST", path, json.dumps(payload).encode(), Config.upstream_timeout)
+        self._send(status, body, ctype, server_ms=(time.time() - t) * 1000)
         return self._done(status, len(body), started, _shape(payload, raw))
 
     # Every other method is not served. BaseHTTPRequestHandler would answer
@@ -281,6 +335,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--ollama", default=Config.ollama)
+    ap.add_argument("--worker", default=Config.worker, help="the worker's loopback URL")
     ap.add_argument("--no-token", action="store_true",
                     help="serve without authentication; only sensible on loopback for a local test")
     ap.add_argument("--wait-for-ollama", type=float, default=0,
@@ -288,6 +343,7 @@ def main() -> int:
     args = ap.parse_args()
 
     Config.ollama = args.ollama.rstrip("/")
+    Config.worker = args.worker.rstrip("/")
     Config.require_token = not args.no_token
     if Config.require_token and not Config.token:
         print(f"FATAL: set {TOKEN_ENV}, or pass --no-token deliberately.", file=sys.stderr)
@@ -310,6 +366,7 @@ def main() -> int:
     print(f"  upstream   {Config.ollama}", flush=True)
     print(f"  auth       {'bearer token' if Config.require_token else 'NONE'}", flush=True)
     print(f"  serving    {', '.join(FORWARD_GET + OWN_GET + FORWARD_POST)}", flush=True)
+    print(f"  worker     {Config.worker}: {', '.join(WORKER_GET + WORKER_POST)}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

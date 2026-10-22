@@ -4,6 +4,7 @@ import useSWR from "swr";
 
 import { PageHeader } from "@/components/common/page-header";
 import { CardSkeleton, ErrorState } from "@/components/common/states";
+import { DefaultsCard } from "@/components/settings/defaults-card";
 import { ModelBackend } from "@/components/settings/model-backend";
 import { RolesCard } from "@/components/settings/roles-card";
 import type { HealthReport } from "@/lib/api";
@@ -20,7 +21,10 @@ export default function SettingsPage() {
       ) : isLoading || !data ? (
         <CardSkeleton height="h-64" />
       ) : (
-        <RolesCard roles={data.roles} />
+        <>
+          <RolesCard roles={data.roles} />
+          {data.defaults && <DefaultsCard defaults={data.defaults} />}
+        </>
       )}
     </div>
   );

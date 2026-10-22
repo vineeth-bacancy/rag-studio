@@ -30,7 +30,8 @@ Always use `./rag`; it resolves the venv.
 
 ```
 ./rag web       # API on 127.0.0.1:8775, UI on 127.0.0.1:3100 (dev mode, both reload)
-./rag ingest    # build the baseline index (≈7 min; a no-op when nothing changed; --force)
+./rag ingest    # build the BASELINE index (≈7 min; a no-op when nothing changed; --force); --profile for others.
+                # The app's default index is docling-structure-embeddinggemma2 (row 5d): ./rag index build <id>
 ./rag eval      # the scorecard (--set a b d, --mode retrieval, --model, --prompt, --ladder ROW, --tag RUN_ID)
 ./rag health    # Ollama, models per role, documents, indexes, memory, disk
 ./rag test      # pytest
@@ -202,6 +203,47 @@ Warning / Needs attention / Unavailable.
 - EmbeddingGemma 2 runs in-process (sentence-transformers, pinned revision,
   `local_files_only`); pass `prompt=""` to `encode` so no config prompt is
   added on top of the profile's prefix.
+
+## Engine gotchas (learned in M5)
+
+- **Every Remote AI output is remembered** (`data/cache/rerank/`,
+  `remote_cache.py`, `data/cache/context/`): fill the caches with a
+  retrieval-only run while Colab is up, disconnect, then run the scorecards
+  here; they replay the same scores and rewrites. Query rewrites and follow-up
+  rewrites depend only on the question, so cache them once for every index;
+  multi-step decisions and rerank scores depend on the index.
+- **qwen3:8b (about 5.6 GB at num_ctx 8192) and the 4B reranker (9.1 GB peak)
+  do not fit a T4 together**; the 0.6B (2 GB) does. Do all qwen3:8b work
+  first, unload it (`POST /api/chat` with `messages: []`, `keep_alive: 0`),
+  then rerank with the 4B. The worker serves only models downloaded at start
+  (a download inside a request would pass the tunnel's 100 s).
+- A `/context` batch can time out on the tunnel (once in about 120 batches);
+  the runtime keeps finished lines, so the client asks again. Never make a
+  Colab job fail on one timeout, or on one bad output: a line over the junk
+  limit (it was 400 characters, below what `num_predict` allows) stopped the
+  job at 1,211/1,473. A rejected line is now counted and its passage left
+  without one, so the build refuses loudly instead.
+- **Back-to-back scorecards starve each other**: the answer model stays
+  resident for Ollama's 5-minute keep-alive (qwen3:1.7b's runner held 5.4 GB
+  RSS), so the next run could not load EmbeddingGemma 2 and refused three times
+  in a row (2026-10-22). A two-pass run now unloads our own answer model first
+  (`OllamaClient.unload`); never unload another app's model.
+- **A replay must reproduce every step, failures included.** Bad multi-step
+  decisions were not cached, so a later run on a runtime without qwen3:8b could
+  not replay them (2026-10-22). An `agent` bad output is now cached (raw +
+  error) and replays as the same stop; a query rewrite's junk stays an
+  uncached error. A rerank-only runtime (no Ollama) replays cached rewrites.
+- Asked again in a later session, one of four bad controller decisions came
+  back valid: never assume a remote LLM output can be regenerated; cache first.
+- Every rebuilt data folder must be in `tests/conftest.py`'s `tmp_data` list:
+  `data/context/` was not, and a test export landed in the real folder.
+- Runs with a reranker or a rewrite evaluate in two passes (search everything,
+  release EmbeddingGemma 2 and the reranker, then answer from the same
+  passages). `./rag eval` with no `--set` leaves out Set E (remote-only).
+- Context lines are written in windows (same-section blocks); Ollama's prefix
+  reuse showed **no** speed-up in practice (first line of a block 2.3 s
+  median, later 2.9 s), and 43% of lines still begin "The passage…". The
+  generation, not the tunnel, is the cost: about 0.3-0.4 lines/s on a T4.
 
 ## UI gotchas (learned in M3)
 

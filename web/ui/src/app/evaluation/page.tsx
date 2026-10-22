@@ -98,7 +98,7 @@ function Evaluation() {
           description="A run searches the index for every test question, so the index comes first."
           hint={
             <>
-              Build it with <code className="rounded bg-muted px-1 py-0.5 font-mono">./rag ingest</code>.
+              Build it with <code className="rounded bg-muted px-1 py-0.5 font-mono">{status.build_command}</code>.
             </>
           }
         />

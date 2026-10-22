@@ -58,11 +58,14 @@ export function ErrorState({
   title = "Couldn't load this",
   message,
   onRetry,
+  action,
   error,
 }: {
   title?: string;
   message: string;
   onRetry?: () => void;
+  /** Another way out than "Try again" (for example "Ask as typed"). */
+  action?: React.ReactNode;
   /**
    * The thrown error, when there is one. An `ApiError` carries a status, which
    * means the API answered and is running - so "start the app service" would
@@ -84,10 +87,15 @@ export function ErrorState({
             <code className="rounded bg-muted px-1 py-0.5 font-mono">./rag web</code>.
           </p>
         )}
-        {onRetry && (
-          <Button size="sm" variant="outline" onClick={onRetry}>
-            Try again
-          </Button>
+        {(onRetry || action) && (
+          <div className="flex flex-wrap gap-2">
+            {onRetry && (
+              <Button size="sm" variant="outline" onClick={onRetry}>
+                Try again
+              </Button>
+            )}
+            {action}
+          </div>
         )}
       </AlertDescription>
     </Alert>

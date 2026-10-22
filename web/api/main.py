@@ -17,6 +17,10 @@ import sse
 from guard import RequestGuard, allowed_origins
 from rag_studio import (__version__, answer, colab, embed, eval as evaluation, health, indexes, ingest, learn,
                         library, paths, profiles, remote, store)
+from rag_studio import chat
+from rag_studio import context as context_mod
+from rag_studio import rerank as rerank_mod
+from rag_studio import rewrite as rewrite_mod
 from rag_studio.config import MODEL_NOTES, role_model
 from rag_studio.embed import ProfileMismatch
 from rag_studio.llm import OllamaClient, OllamaUnavailable
@@ -195,6 +199,11 @@ def post_build(profile_id: str, req: BuildRequest) -> dict:
         ingest.check_memory(prof, req.on)
     except ingest.BuildRefused as e:
         _fail(409, str(e))
+    if prof.contextual:
+        have = _context_progress(prof)
+        if have["written"] < have["passages"]:
+            _fail(409, f"{have['passages'] - have['written']:,} passages have no context line yet. "
+                       "Write them on Remote AI first.")
     if ingest.active_build():
         _fail(409, "Another index is being built. Wait for it to finish, or cancel it.")
     started = threading.Event()
@@ -231,6 +240,89 @@ def cancel_build(profile_id: str) -> dict:
     flag = _build_cancel.get(_profile(profile_id).id)
     if flag is None:
         _fail(404, "This build is not running here. A build started in the terminal stops with Ctrl-C.")
+    flag.set()
+    return {"profile": profile_id, "cancelling": True}
+
+
+# --------------------------------------------------------------------------- context lines (M5)
+
+_context_cancel: dict[str, threading.Event] = {}
+_context_seen: dict[str, tuple[float, dict]] = {}
+
+
+def _context_progress(prof: profiles.IndexProfile) -> dict:
+    """How many passages have a line. Reads the cleaned documents and the cache (a few seconds), so
+    a recent answer is reused for 20 s."""
+    import time
+    hit = _context_seen.get(prof.id)
+    if hit and time.monotonic() - hit[0] < 20:
+        return hit[1]
+    out = context_mod.progress_for(prof)
+    _context_seen[prof.id] = (time.monotonic(), out)
+    return out
+
+
+def _contextual(profile_id: str) -> profiles.IndexProfile:
+    prof = _profile(profile_id)
+    if not prof.contextual:
+        _fail(400, f"{prof.label} has no context lines.")
+    return prof
+
+
+@app.get("/api/indexes/{profile_id}/context")
+def get_context(profile_id: str) -> dict:
+    """Context lines for a profile: how many exist, the last job, and whether they can be written now."""
+    prof = _contextual(profile_id)
+    info = remote.worker_info() if remote.connected() else None
+    can = ({"ok": True, "reason": None} if info and info.get("context") else
+           {"ok": False, "reason": "Needs Remote AI running the context job. Connect it in Settings."})
+    return {"profile": prof.id, **_context_progress(prof), "job": context_mod.last_job(prof.id),
+            "can": can, "model": context_mod.CONTEXT_MODEL}
+
+
+@app.post("/api/indexes/{profile_id}/context", status_code=202)
+def post_context(profile_id: str) -> dict:
+    """Start writing the missing context lines on the connected runtime, in the background."""
+    prof = _contextual(profile_id)
+    try:
+        client = remote.client()
+    except remote.RemoteNotConnected as e:
+        _fail(409, f"Context lines are written by Remote AI, which is not connected. {e}")
+    info = remote.worker_info(client)
+    if not info or not info.get("context"):
+        _fail(409, "The connected runtime is not running the context job. Run the setup cell with the context job "
+                   "(./rag llm colab --worker context), then connect.")
+    started = threading.Event()
+    failure: list[str] = []
+    cancel = _context_cancel[prof.id] = threading.Event()
+
+    def work() -> None:
+        try:
+            started.set()
+            context_mod.write_lines(prof, client=client, cancel=cancel.is_set)
+            context_mod.export(prof)
+        except Exception as e:  # noqa: BLE001 - recorded in the job file by write_lines
+            failure.append(str(e) or type(e).__name__)
+        finally:
+            started.set()
+            _context_cancel.pop(prof.id, None)
+            _context_seen.pop(prof.id, None)
+
+    threading.Thread(target=work, name=f"context-{prof.id}", daemon=True).start()
+    started.wait(timeout=10)
+    import time
+    time.sleep(0.5)
+    job = context_mod.last_job(prof.id)
+    if failure and not (job and job.get("status") == "running"):
+        _fail(409, failure[0])
+    return {"profile": prof.id, "job": job}
+
+
+@app.post("/api/indexes/{profile_id}/context/cancel")
+def cancel_context(profile_id: str) -> dict:
+    flag = _context_cancel.get(_contextual(profile_id).id)
+    if flag is None:
+        _fail(404, "Context lines are not being written here. A job started in the terminal stops with Ctrl-C.")
     flag.set()
     return {"profile": profile_id, "cancelling": True}
 
@@ -286,23 +378,25 @@ def get_llm_status(probe: bool = Query(False, description="also ask the runtime 
 
 
 @app.get("/api/llm/colab")
-def get_colab_cell(models: str | None = Query(None, max_length=300)) -> dict:
+def get_colab_cell(models: str | None = Query(None, max_length=300),
+                   worker: str | None = Query(None, max_length=200)) -> dict:
     """The setup cell to paste into Colab. Tokenless on purpose: the runtime
     makes its own token and hands it back inside the connect code, which is
     pasted into Connect. `./rag llm colab` is the variant with a remembered
     token; it prints to a terminal, not into an HTTP response."""
-    wanted = models.split() if models else list(colab.DEFAULT_MODELS)
+    jobs = worker.split(",") if worker else []
+    wanted = models.split() if models else ([] if jobs else list(colab.DEFAULT_MODELS))
     try:
         version = OllamaClient().version()
     except OllamaUnavailable:
         version = None
     try:
-        cell = colab.build_cell(models=wanted, token=None, ollama_version=version)
+        cell = colab.build_cell(models=wanted, token=None, ollama_version=version, worker=jobs)
     except ValueError as e:
         _fail(400, str(e))
     except colab.MissingPayload as e:
         _fail(500, str(e))
-    return {"cell": cell, "models": wanted, "ollama_version": version,
+    return {"cell": cell, "models": wanted, "worker": jobs, "ollama_version": version,
             "files": list(colab.PAYLOAD_FILES), "tokenless": True,
             "cli_equivalent": "./rag llm colab --copy", **colab.cell_stats(cell)}
 
@@ -355,6 +449,23 @@ class AskRequest(BaseModel):
     prompt: str = Field(DEFAULT_VERSION, max_length=40)
     search: str = Field("dense", pattern=SEARCH_PATTERN)
     section_cap: int | None = Field(None, ge=1, le=10)
+    rerank: str | None = Field(None, max_length=40)
+    rerank_depth: int = Field(rerank_mod.DEFAULT_DEPTH, ge=2, le=50)
+    rewrite: str | None = Field(None, max_length=20)
+    agent_rounds: int | None = Field(None, ge=2, le=6)
+    # A conversation: omit for a new one (the answer says its id). `as_typed` skips the follow-up rewrite.
+    chat_id: str | None = Field(None, max_length=32)
+    as_typed: bool = False
+
+
+def _search_spec(method: str, section_cap: int | None, rerank: str | None, rerank_depth: int,
+                 rewrite: str | None = None, agent_rounds: int | None = None) -> SearchSpec:
+    """The request's switches as a search spec; a switch that is not valid is a 400."""
+    try:
+        return SearchSpec(method, section_cap, rerank=rerank, rerank_depth=rerank_depth, rewrite=rewrite,
+                          agent_rounds=agent_rounds)
+    except ValueError as e:
+        _fail(400, str(e))
 
 
 def _profile(profile_id: str) -> profiles.IndexProfile:
@@ -374,9 +485,72 @@ def _prompt(version: str) -> str:
 def post_ask(req: AskRequest):
     """One question, answered as server-sent events (see rag_studio/answer.py
     for the event contract): stage, ready, delta, done or error."""
-    return sse.stream(answer.ask(req.question, k=req.k, profile_id=_profile(req.profile).id,
-                                 prompt_version=_prompt(req.prompt),
-                                 search=SearchSpec(req.search, req.section_cap)))
+    prof = _profile(req.profile)
+    prompt = _prompt(req.prompt)
+    spec = _search_spec(req.search, req.section_cap, req.rerank, req.rerank_depth, req.rewrite, req.agent_rounds)
+    chat_id = req.chat_id
+    past: list[dict[str, str]] | None = None
+    if chat_id:
+        try:
+            if chat.load(chat_id) is None:
+                _fail(404, "No such conversation. It may have been deleted.")
+            past = chat.history(chat_id) or None
+        except chat.BadChatId as e:
+            _fail(400, str(e))
+    else:
+        chat_id = chat.new_id()
+    setup = {"profile": prof.id, "prompt": prompt, "search": spec.describe(), "k": req.k}
+
+    def events():
+        for name, data in answer.ask(req.question, k=req.k, profile_id=prof.id, prompt_version=prompt, search=spec,
+                                     history=past, as_typed=req.as_typed):
+            if name in ("ready", "done", "error"):
+                data = {**data, "chat_id": chat_id}
+            if name == "done":
+                try:
+                    chat.add_turn(chat_id, data, setup)
+                except (ValueError, KeyError, TypeError, OSError) as e:
+                    # An answer is never lost because its thread could not be saved: say so beside it.
+                    data = {**data, "chat_warning": str(e) if isinstance(e, ValueError)
+                            else "This answer could not be saved to the conversation."}
+            yield name, data
+
+    return sse.stream(events())
+
+
+@app.get("/api/rerankers")
+def get_rerankers() -> dict:
+    """The rerankers, where each runs, and whether it can run now."""
+    from rag_studio import rewrite
+    return {"depth": rerank_mod.DEFAULT_DEPTH, "rerankers": rerank_mod.availability(),
+            "rewrite": rewrite.availability()}
+
+
+@app.get("/api/chats")
+def get_chats() -> dict:
+    return {"chats": chat.list_chats()}
+
+
+@app.get("/api/chats/{chat_id}")
+def get_chat(chat_id: str) -> dict:
+    try:
+        convo = chat.load(chat_id)
+    except chat.BadChatId as e:
+        _fail(404, str(e))
+    if convo is None:
+        _fail(404, "No such conversation. It may have been deleted.")
+    return convo
+
+
+@app.delete("/api/chats/{chat_id}")
+def delete_chat(chat_id: str) -> dict:
+    try:
+        gone = chat.delete(chat_id)
+    except chat.BadChatId as e:
+        _fail(404, str(e))
+    if not gone:
+        _fail(404, "No such conversation. It may have been deleted.")
+    return {"id": chat_id, "deleted": True}
 
 
 @app.get("/api/prompts")
@@ -444,6 +618,11 @@ class RunRequest(BaseModel):
     prompt: str = Field(DEFAULT_VERSION, max_length=40)
     search: str = Field("dense", pattern=SEARCH_PATTERN)
     section_cap: int | None = Field(None, ge=1, le=10)
+    rerank: str | None = Field(None, max_length=40)
+    rerank_depth: int = Field(rerank_mod.DEFAULT_DEPTH, ge=2, le=50)
+    rewrite: str | None = Field(None, max_length=20)
+    agent_rounds: int | None = Field(None, ge=2, le=6)
+    as_typed: bool = False
 
 
 # Cancel flags for runs started by this process. A run started from the
@@ -459,7 +638,8 @@ def post_run(req: RunRequest) -> dict:
     spec = evaluation.RunSpec(sets=req.sets, mode=req.mode, k=req.k, model=req.model,
                               label=req.label, profile=_profile(req.profile).id,
                               prompt_version=_prompt(req.prompt),
-                              search={"method": req.search, "section_cap": req.section_cap})
+                              search=_search_spec(req.search, req.section_cap, req.rerank, req.rerank_depth,
+                                                  req.rewrite, req.agent_rounds).as_args(), as_typed=req.as_typed)
     with _start_lock:
         if evaluation.run_is_active():
             _fail(409, "An evaluation run is already in progress. Wait for it to finish, or cancel it.")
@@ -513,6 +693,12 @@ def _learn_call(fn, *args, **kwargs):
         _fail(409, str(e))
     except OllamaUnavailable as e:
         _fail(503, f"AI unavailable. {e.reason}")
+    except rerank_mod.RerankError as e:
+        _fail(503, str(e))
+    except rewrite_mod.RewriteUnavailable as e:
+        _fail(503, str(e))
+    except rewrite_mod.RewriteBadOutput as e:
+        _fail(502, f"Remote AI's answer was not usable: {e} Try again.")
     except ValueError as e:
         _fail(400, str(e))
 
@@ -534,9 +720,11 @@ def get_chunk_lab(doc_id: str = Query(..., max_length=100), page: int = Query(..
 def get_search_lab(q: str = Query(..., min_length=1, max_length=500),
                    profile: str = Query(profiles.DEFAULT, max_length=40),
                    k: int = Query(learn.LAB_K, ge=1, le=20),
-                   cap: int | None = Query(None, ge=1, le=10)) -> dict:
-    """Dense, BM25 and hybrid lists for one question, for the search lab."""
-    return _learn_call(learn.search_lab, q, _profile(profile).id, k, cap)
+                   cap: int | None = Query(None, ge=1, le=10),
+                   rerank: str | None = Query(None, max_length=40)) -> dict:
+    """Dense, BM25 and hybrid lists for one question, for the search lab; with
+    `rerank`, also the dense top 20 re-ordered by that reranker."""
+    return _learn_call(learn.search_lab, q, _profile(profile).id, k, cap, rerank)
 
 
 @app.get("/api/learn/embed")
@@ -548,6 +736,34 @@ def get_embed_lab(profile: str = Query(profiles.DEFAULT, max_length=40),
     the same question embedded by another index's model, searched here."""
     return _learn_call(learn.embed_lab, _profile(profile).id, (q or "").strip() or None,
                        _profile(mix).id if mix else None)
+
+
+@app.get("/api/learn/context")
+def get_context_lab(profile: str = Query(learn.CONTEXT_DEFAULT, max_length=60),
+                    question: str | None = Query(None, pattern=r"^[A-Z][0-9]{1,2}$"),
+                    chunk: str | None = Query(None, max_length=120, pattern=r"^[a-z0-9_]+:p[0-9]{1,4}:c[0-9]{1,4}$")
+                    ) -> dict:
+    """Step 4: a passage, its context line and the text embedded with and
+    without it; with a test question id, where its answer ranks on the plain
+    and the -ctx index. Reads the context-line cache only: no model call."""
+    return _learn_call(learn.context_lab, _profile(profile).id, question, chunk)
+
+
+@app.get("/api/learn/rewrite")
+def get_rewrite_lab(question: str = Query(..., pattern=r"^[A-Z][0-9]{1,2}$"),
+                    profile: str = Query(profiles.DEFAULT, max_length=60)) -> dict:
+    """Step 8: one test question as each rewriting technique and the
+    multi-step search searched it, replayed from recorded runs (no model call)."""
+    return _learn_call(learn.rewrite_lab, question, _profile(profile).id)
+
+
+@app.get("/api/learn/rewrite/live")
+def get_rewrite_live(q: str = Query(..., min_length=1, max_length=500),
+                     technique: str = Query(..., pattern="^(decompose|multi|hyde|agent)$"),
+                     profile: str = Query(profiles.DEFAULT, max_length=60)) -> dict:
+    """Step 8, live: one question searched now with one technique. Needs
+    Remote AI; a rewrite made before for the same words is replayed."""
+    return _learn_call(learn.rewrite_live, q, _profile(profile).id, technique)
 
 
 @app.get("/api/learn/store")

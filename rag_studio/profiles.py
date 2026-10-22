@@ -85,6 +85,11 @@ class IndexProfile:
         d["chunker"] = self.chunker.describe()
         d["embedding"] = self.embedding.describe()
         d["parser_version"] = parser_version(self.parser)
+        if self.contextual:
+            # Only profiles with context lines record how they were written;
+            # every other profile's recorded setup stays byte-identical.
+            from rag_studio import context
+            d["context"] = context.describe()
         return d
 
 
@@ -218,10 +223,28 @@ ROW5 = [_row5(base, spec, slug, where)
                                   (QWEN3_8B, "qwen3-8b", "built and queried on the Colab GPU"))
         for base in (PYMUPDF_STRUCTURE, DOCLING_STRUCTURE)]
 
+# Ladder row 7 (M5): one change from a row-5 profile each, a context line
+# written for every passage (by qwen3:8b on the Colab GPU) and embedded with it.
+ROW7 = [replace(
+    base, id=f"{base.id}-ctx", label=f"{base.label}, with context lines", contextual=True,
+    description=f"{base.description} Each passage also gets one or two sentences that place it in its "
+                "document, written on Remote AI and embedded with the passage. The answer model still "
+                "sees only the passage.")
+    for base in (next(p for p in ROW5 if p.id == f"{b}-structure-embeddinggemma2") for b in ("pymupdf", "docling"))]
+
 PROFILES: dict[str, IndexProfile] = {p.id: p for p in (
     BASELINE, PYMUPDF_CLEAN, DOCLING_CLEAN,
-    PYMUPDF_SNAP, PYMUPDF_STRUCTURE, DOCLING_STRUCTURE, PYMUPDF_SEMANTIC, *ROW5)}
-DEFAULT = BASELINE.id
+    PYMUPDF_SNAP, PYMUPDF_STRUCTURE, DOCLING_STRUCTURE, PYMUPDF_SEMANTIC, *ROW5, *ROW7)}
+# The app's default index since M5 (2026-10-16): row 5d on the ladder. `./rag
+# ingest` still builds BASELINE unless told otherwise (cli.py), because on a
+# wiped data/ this default would start a 866 s Docling conversion.
+DEFAULT = "docling-structure-embeddinggemma2"
+
+
+def build_command(profile_id: str) -> str:
+    """The command that builds a profile. `./rag ingest` is only the baseline's
+    quick path; every other profile is built with `./rag index build`."""
+    return "./rag ingest" if profile_id == BASELINE.id else f"./rag index build {profile_id}"
 
 
 def get(profile_id: str) -> IndexProfile:

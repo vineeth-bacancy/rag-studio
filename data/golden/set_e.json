@@ -1,0 +1,105 @@
+{
+  "id": "set-e",
+  "name": "Set E",
+  "description": "Follow-up questions: each is asked after a recorded first turn, and only makes sense with it (\"And for 2027?\"). Remote AI rewrites each into a question that stands alone; the rewrite is checked, then retrieval, then the answer.",
+  "source": "Written for RAG Studio on 2026-10-16. Every answer was found in the PDFs' extracted text, and every page that states it is listed (spec §5.4).",
+  "scored": true,
+  "remote_only": true,
+  "questions": [
+    {
+      "id": "E1",
+      "category": "Follow-up: another year",
+      "history": [{"question": "What is the growth forecast for South Asia in 2026?",
+                   "answer": "The report forecasts South Asia's real GDP growth at 6.3 percent in 2026."}],
+      "question": "And for 2027?",
+      "standalone_expect": ["South Asia", "2027"],
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [26, 189],
+      "expect": [{"pattern": "(?<![\\d.])6\\.9(?!\\d)", "label": "6.9"}],
+      "note": "6.9 percent (2027f). p26 and p189 print South Asia as 6.6 6.8 7.0 6.3 6.9 for 2023-2027f. A4's 'about 7 percent' is the 2027-28 average; 6.9 is the 2027 figure."
+    },
+    {
+      "id": "E2",
+      "category": "Follow-up: a share of it",
+      "history": [{"question": "What is the total carbon footprint of the iMac?",
+                   "answer": "The iMac's total product footprint is 346 kg CO2e for the two-port 256GB configuration, and 391 kg CO2e for the four-port 512GB one."}],
+      "question": "How much of that is transportation?",
+      "standalone_expect": ["iMac", "transport"],
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [10],
+      "expect": [{"pattern": "(?<![\\d.])5\\s?(%|percent)", "label": "5%"}],
+      "note": "5% (Production 50%, Transportation 5%, Product use 45%, End-of-life <1%). The pattern must not accept the 45% of product use."
+    },
+    {
+      "id": "E3",
+      "category": "Follow-up: a detail of the answer",
+      "history": [{"question": "How many depository libraries did GPO staff visit in FY 2018?",
+                   "answer": "GPO staff visited 166 depository libraries in FY 2018."}],
+      "question": "In how many states?",
+      "standalone_expect": ["librar", "states"],
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [5, 21],
+      "expect": [{"pattern": "(?<![\\d.,])25(?![\\d,])", "label": "25"}],
+      "note": "25 states: 'GPO staff visited 166 depository libraries in 25 states' (pp. 5 and 21)."
+    },
+    {
+      "id": "E4",
+      "category": "Follow-up: an earlier thing, not the answer",
+      "history": [{"question": "What new digital system replaced FDsys?",
+                   "answer": "GPO's new system is govinfo, the successor to its FDsys website."}],
+      "question": "When was the old system retired?",
+      "standalone_expect": ["FDsys", "retire"],
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [4, 8, 10, 22],
+      "expect": [["December 2018", "Dec. 2018", "Dec 2018"]],
+      "note": "FDsys was scheduled for retirement in December 2018 (pp. 4, 8, 10, 22). The report says 'scheduled' and 'goal of retiring', so 'planned for December 2018' is a right answer."
+    },
+    {
+      "id": "E5",
+      "category": "Follow-up: the same figure, another year",
+      "history": [{"question": "What is the global growth forecast for 2026?",
+                   "answer": "Global growth is projected to slow to 2.5 percent in 2026."}],
+      "question": "What was it in 2025?",
+      "standalone_expect": ["global growth", "2025"],
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [19, 25, 27],
+      "expect": [{"pattern": "(?<![\\d.])2\\.9(?!\\d)", "label": "2.9"}],
+      "note": "2.9 percent in 2025 (pp. 19, 25, 27: 'from 2.9 percent in 2025')."
+    },
+    {
+      "id": "E6",
+      "category": "Follow-up: the year before",
+      "history": [{"question": "What was GPO's net income in FY 2018?",
+                   "answer": "GPO's net income was $52.6 million in FY 2018."}],
+      "question": "And the year before?",
+      "standalone_expect": ["net income", "2017"],
+      "doc_id": "gpo_2018_annual_report",
+      "answer_pages": [26, 44, 59, 60],
+      "expect": [["58.9", "58,876", "38.3", "38,295"]],
+      "note": "FY 2017 net income was $58.9 million; the report's adjusted figure for FY 2017 is $38.3 million, and p44 calls that one plain 'net income' too (see D3). Either is right."
+    },
+    {
+      "id": "E7",
+      "category": "Follow-up: a thing the documents do not have",
+      "history": [{"question": "How much of the iMac's carbon footprint comes from product use?",
+                   "answer": "45 percent of the iMac's carbon footprint comes from product use."}],
+      "question": "What about the MacBook Air?",
+      "standalone_expect": ["MacBook Air"],
+      "expect": "REFUSE",
+      "note": "A trap: no document mentions the MacBook Air. The rewrite should ask about its product-use share, and the answer must be the refusal."
+    },
+    {
+      "id": "E8",
+      "category": "Follow-up: a change of subject",
+      "history": [{"question": "How many depository libraries did GPO staff visit in FY 2018?",
+                   "answer": "GPO staff visited 166 depository libraries in 25 states."}],
+      "question": "What is the iMac stand made of?",
+      "standalone_expect": ["iMac", "stand"],
+      "standalone_forbid": ["GPO", "librar", "FY 2018"],
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [1, 2, 4],
+      "expect": [["recycled aluminum", "recycled aluminium"]],
+      "note": "100 percent recycled aluminum (pp. 1, 2, 4). The rewrite must not carry the GPO conversation over: it is a new subject."
+    }
+  ]
+}

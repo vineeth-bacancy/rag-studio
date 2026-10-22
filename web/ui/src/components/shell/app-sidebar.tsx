@@ -165,7 +165,7 @@ export function AppSidebar() {
               label="Index"
               value={!status ? "..." : status.indexed ? "Built" : "Not built"}
               tone={!status ? "muted" : status.indexed ? "ok" : "muted"}
-              hint={status && !status.indexed ? "No search index yet. Build one with ./rag ingest." : undefined}
+              hint={status && !status.indexed ? `No search index yet. Build one with ${status.build_command}.` : undefined}
               href={status && !status.indexed ? "/indexes" : undefined}
             />
           </>

@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronRight, Cpu } from "lucide-react";
 import { TechnicalDetails } from "@/components/common/technical-details";
 import type { AskDone, AskReady, TraceStep } from "@/lib/api";
 import { NO_DATA, num } from "@/lib/format";
+import { listName, shortId, StepDetail } from "@/components/ask/trace-steps";
 import { searchName } from "@/lib/search";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,7 @@ export function WhatHappened({ steps, ready, done }: { steps: TraceStep[]; ready
       <div className="space-y-4 border-t px-3 py-3">
         <ol className="space-y-2">
           {steps.map((s, i) => (
-            <StepRow key={s.id} step={s} index={i + 1} total={total} />
+            <StepRow key={`${s.id}-${i}`} step={s} index={i + 1} total={total} />
           ))}
         </ol>
         {ready && <PromptBudget ready={ready} done={done} />}
@@ -55,6 +56,7 @@ function StepRow({ step, index, total }: { step: TraceStep; index: number; total
       </div>
       <span className="text-right text-xs text-muted-foreground tabular-nums">{duration(step.ms)}</span>
       {step.id === "search" && <SearchLists detail={step.detail} />}
+      <StepDetail step={step} />
     </li>
   );
 }
@@ -80,18 +82,12 @@ function SearchLists({ detail }: { detail: TraceStep["detail"] }) {
       </p>
       {Object.entries(lists).map(([name, hits]) => (
         <p key={name} className="truncate font-mono" title={hits.map((h) => `${h.rank}. ${h.chunk_id}`).join("\n")}>
-          <span className="font-sans">{name === "bm25" ? "BM25" : "Dense"}:</span>{" "}
+          <span className="font-sans">{listName(name)}:</span>{" "}
           {hits.slice(0, 5).map((h) => shortId(h.chunk_id)).join(" · ")}
         </p>
       ))}
     </div>
   );
-}
-
-/** "wb_gep_2026_06:p19:c2" -> "p19 c2". */
-function shortId(chunkId: string): string {
-  const [, page, c] = chunkId.split(":");
-  return page && c ? `${page} ${c}` : chunkId;
 }
 
 /**

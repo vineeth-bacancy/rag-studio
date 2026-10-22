@@ -14,11 +14,12 @@ import {
   type GoldenSet,
   type IndexesResponse,
   type PromptVersion,
+  type RerankersResponse,
   type RunBrief,
   type RunMode,
   type SearchMethod,
 } from "@/lib/api";
-import { SEARCH_LABELS, SECTION_CAP } from "@/lib/search";
+import { AGENT_ROUNDS, REWRITE_EXPLAIN, REWRITE_LABELS, SEARCH_LABELS, SECTION_CAP } from "@/lib/search";
 
 /**
  * Start a run: which test questions, which index they search and how, whether
@@ -42,11 +43,29 @@ export function StartRun({
   const [chosen, setChosen] = useState<string[]>(["set-a"]);
   const [mode, setMode] = useState<RunMode>("answer");
   const [model, setModel] = useState<string | null>(null);
-  const [profile, setProfile] = useState<string>("baseline");
+  const [pickedProfileId, setProfile] = useState<string | null>(null);
+  const profile = pickedProfileId ?? indexes?.default_profile ?? "";
   const [prompt, setPrompt] = useState<string | null>(null);
   const [search, setSearch] = useState<SearchMethod>("dense");
   const [capped, setCapped] = useState(false);
+  const [rerank, setRerank] = useState<string | null>(null);
+  const [rewrite, setRewrite] = useState<string | null>(null);
+  const [agentRounds, setAgentRounds] = useState<number | null>(null);
+  const [asTyped, setAsTyped] = useState(false);
+  const { data: rerankers } = useSWR<RerankersResponse>("/rerankers");
   const [starting, setStarting] = useState(false);
+
+  // Rewriting, multi-step search and Set E's follow-ups are done by Remote AI
+  // (qwen3:8b on Colab), never by a silent local stand-in.
+  const remote = rerankers?.rewrite;
+  const remoteOk = remote?.ok === true;
+  const followupSets = sets.filter((s) => s.remote_only && chosen.includes(s.id));
+  const blocked =
+    (rewrite || agentRounds) && remote && !remoteOk
+      ? remote.reason
+      : followupSets.length > 0 && !asTyped && remote && !remoteOk
+        ? `${followupSets.map((s) => s.name).join(", ")} is rewritten by Remote AI, which is not connected. Connect it in Settings, or ask the follow-ups as typed.`
+        : null;
 
   const pickedModel = model ?? models?.default ?? null;
   const pickedPrompt = prompt ?? prompts?.default ?? null;
@@ -85,6 +104,10 @@ export function StartRun({
         profile,
         search: pickedSearch,
         section_cap: capped ? SECTION_CAP : null,
+        ...(rerank ? { rerank } : {}),
+        ...(rewrite ? { rewrite } : {}),
+        ...(agentRounds ? { agent_rounds: agentRounds } : {}),
+        ...(followupSets.length > 0 && asTyped ? { as_typed: true } : {}),
         ...(mode === "answer" && pickedPrompt ? { prompt: pickedPrompt } : {}),
       });
       toast.success("Run started. Results appear below as each question finishes.");
@@ -124,12 +147,31 @@ export function StartRun({
                   <span className="block text-sm">
                     {s.name} <span className="text-muted-foreground tabular-nums">· {s.questions.length} questions</span>
                     {!s.scored && <span className="text-muted-foreground"> · retrieval only</span>}
+                    {s.remote_only && <span className="text-muted-foreground"> · needs Remote AI</span>}
                   </span>
                   <span className="block text-xs text-pretty text-muted-foreground">{s.description}</span>
+                  {s.remote_only && remote && !remoteOk && (
+                    <span className="block text-xs text-pretty text-amber-700 dark:text-amber-400">
+                      Remote AI is not connected, so its follow-ups can only be asked as typed.
+                    </span>
+                  )}
                 </span>
               </label>
             );
           })}
+          {followupSets.length > 0 && (
+            <div className="space-y-1 pt-1 pl-1.5">
+              <label className="flex w-fit cursor-pointer items-center gap-2 text-sm">
+                <Switch checked={asTyped} onCheckedChange={setAsTyped} />
+                Ask follow-ups as typed
+              </label>
+              <p className="max-w-prose text-xs text-pretty text-muted-foreground">
+                {asTyped
+                  ? "Each follow-up is searched exactly as written (\"And for 2027?\"), with no rewrite: the run shows what the conversation's memory is worth."
+                  : "Remote AI first makes each follow-up a question that stands alone, using the recorded earlier turn. The rewrite is checked, then retrieval, then the answer."}
+              </p>
+            </div>
+          )}
         </fieldset>
 
         <fieldset className="space-y-2">
@@ -232,6 +274,110 @@ export function StartRun({
           </p>
         </div>
 
+        <div className="space-y-1.5">
+          <label htmlFor="run-rerank" className="text-sm font-medium">
+            Reranker
+          </label>
+          <Select
+            items={{ off: "Off", ...Object.fromEntries((rerankers?.rerankers ?? []).map((r) => [r.id, r.label])) }}
+            value={rerank ?? "off"}
+            onValueChange={(v) => setRerank(!v || v === "off" ? null : (v as string))}
+          >
+            <SelectTrigger id="run-rerank" className="w-full sm:w-72">
+              <SelectValue placeholder="Off" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {(rerankers?.rerankers ?? []).map((r) => (
+                <SelectItem key={r.id} value={r.id} disabled={!r.can.ok}>
+                  <span className="flex flex-col">
+                    <span>{r.label}</span>
+                    {!r.can.ok && <span className="text-[11px] text-muted-foreground">{r.can.reason}</span>}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="max-w-prose text-xs text-pretty text-muted-foreground">
+            A slower model reads each of the top {rerankers?.depth ?? 20} passages with the question and puts them in a
+            better order. On this computer it adds 20 to 35 seconds to every question, and the run searches every
+            question first, then answers them.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor="run-rewrite" className="text-sm font-medium">
+            Query rewriting
+          </label>
+          <Select
+            items={{ off: "Off", ...REWRITE_LABELS }}
+            value={rewrite ?? "off"}
+            onValueChange={(v) => setRewrite(!v || v === "off" ? null : (v as string))}
+          >
+            <SelectTrigger id="run-rewrite" className="w-full sm:w-72">
+              <SelectValue placeholder="Off" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {Object.entries(REWRITE_LABELS).map(([id, label]) => (
+                <SelectItem key={id} value={id} disabled={!remoteOk}>
+                  <span className="flex flex-col">
+                    <span>{label}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {remote && !remoteOk ? remote.reason : REWRITE_EXPLAIN[id]}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="max-w-prose text-xs text-pretty text-muted-foreground">
+            Remote AI rewrites each question before it is searched, and the lists are combined. Every rewrite is
+            remembered, so a later run with the same setup reuses it.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-medium">
+              <Switch
+                checked={agentRounds !== null}
+                onCheckedChange={(on) => setAgentRounds(on ? 3 : null)}
+                disabled={!remoteOk && agentRounds === null}
+              />
+              Multi-step search
+            </label>
+            {agentRounds !== null && (
+              <>
+                <label htmlFor="run-rounds" className="sr-only">
+                  Rounds at most
+                </label>
+                <Select
+                  items={Object.fromEntries(AGENT_ROUNDS.map((n) => [String(n), `Up to ${n} rounds`]))}
+                  value={String(agentRounds)}
+                  onValueChange={(v) => v && setAgentRounds(Number(v))}
+                >
+                  <SelectTrigger id="run-rounds" size="sm" className="w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AGENT_ROUNDS.map((n) => (
+                      <SelectItem key={n} value={String(n)}>
+                        Up to {n} rounds
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
+          </div>
+          <p className="max-w-prose text-xs text-pretty text-muted-foreground">
+            {remote && !remoteOk && agentRounds === null
+              ? remote.reason
+              : "Round 1 is the normal search. Then Remote AI reads what was found and either answers or searches once more, perhaps in one document, until it has enough or reaches the limit."}
+          </p>
+        </div>
+
         {mode === "answer" && (
           <div className="space-y-1.5">
             <label htmlFor="run-model" className="text-sm font-medium">
@@ -285,11 +431,20 @@ export function StartRun({
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-          <p className="text-xs text-muted-foreground">{estimate}</p>
+          {blocked ? (
+            <p className="max-w-prose text-xs text-pretty text-amber-700 dark:text-amber-400">{blocked}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">{estimate}</p>
+          )}
           <Button
             onClick={start}
             disabled={
-              active || starting || chosen.length === 0 || (mode === "answer" && !pickedModel) || !pickedProfile?.active
+              active ||
+              starting ||
+              chosen.length === 0 ||
+              (mode === "answer" && !pickedModel) ||
+              !pickedProfile?.active ||
+              blocked !== null
             }
           >
             <Play aria-hidden />

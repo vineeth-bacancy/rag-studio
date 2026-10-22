@@ -48,6 +48,11 @@ carry none (ports, file paths, Python names) move one layer down.
 | Moving extra passages of one section behind the others | **limit per section** | section cap | dedupe, diversity filter |
 | Re-scoring the top results with a slower model | **reranking** | cross-encoder | re-sorting |
 | A model's sentence placing a passage in its document | **context line** | contextual retrieval | summary, header |
+| A thread of questions and answers kept on this computer | **conversation** (New conversation) | chat (`data/chat/`) | session, thread (in primary UI) |
+| A question that leans on an earlier turn ("And for 2027?") | **follow-up question** | standalone rewrite | context query |
+| What a follow-up was searched as, after Remote AI made it whole | **Searched for: …** (with **Ask as typed**) | standalone question | reformulated query |
+| Asking the question in other words before searching | **query rewriting**: **Split into parts**, **Several phrasings**, **Draft answer first** | decomposition, multi-query, HyDE | query expansion (in primary UI) |
+| Searching again after looking at what was found | **multi-step search**, in **rounds** ("Round 2") | agentic loop, controller | agent, autonomous search |
 | A passage's section ("Ch. 1 > Box 1.1") | **section** | section path | breadcrumb, heading path |
 | The document and section written in front of a passage before it is embedded, indexed and shown to the model | **section label** | contextual header (spec §5.2) | header, breadcrumb; not a context line (M5's model-written sentence) |
 | The questions with verified answers | **test questions** | golden set | benchmark, dataset |

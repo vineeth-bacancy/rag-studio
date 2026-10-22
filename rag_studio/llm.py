@@ -11,8 +11,12 @@ to connect: a Colab runtime that Colab reclaimed should fail in seconds with
 """
 from __future__ import annotations
 
+import gzip
 import json
-from dataclasses import dataclass
+import re
+import threading
+import time
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import httpx
@@ -30,7 +34,49 @@ MODEL_TIMEOUT = httpx.Timeout(connect=2.0, read=600.0, write=60.0, pool=5.0)
 # should still fail fast. Cloudflare itself ends any request at 100 s (HTTP
 # 524), which an embedding batch on a GPU never comes near.
 REMOTE_STATUS_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
-REMOTE_MODEL_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=5.0)
+# The read timeout stays just under that limit: a reply the tunnel will never
+# deliver is reported as the tunnel's limit, by us, not waited on for minutes.
+REMOTE_MODEL_TIMEOUT = httpx.Timeout(connect=10.0, read=95.0, write=60.0, pool=5.0)
+# A request body of at least this many bytes is gzipped on its way up: the
+# tunnel's upload leg is the slow one, and passages are text (httpx never
+# compresses a request by itself).
+GZIP_REQUEST_MIN_BYTES = 4 * 1024
+
+
+@dataclass
+class NetStats:
+    """What crossed the tunnel, for the trace and the run record (spec §4.3).
+    `raw` is the JSON's size, `wire` what was sent after compression."""
+    calls: int = 0
+    bytes_out_raw: int = 0
+    bytes_out_wire: int = 0
+    bytes_in_raw: int = 0
+    bytes_in_wire: int = 0
+    wall_ms: float = 0.0
+    server_ms: float = 0.0     # what the far side says it spent (Server-Timing)
+    connections: int = 0       # new TCP/TLS connections opened (keep-alive keeps this at 1)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def add(self, **kw: float) -> None:
+        with self._lock:
+            self.calls += int(kw.pop("calls", 0))
+            for k, v in kw.items():
+                setattr(self, k, getattr(self, k) + v)
+
+    def snapshot(self) -> dict[str, float]:
+        with self._lock:
+            return {"calls": self.calls, "bytes_out_raw": self.bytes_out_raw, "bytes_out_wire": self.bytes_out_wire,
+                    "bytes_in_raw": self.bytes_in_raw, "bytes_in_wire": self.bytes_in_wire,
+                    "wall_ms": round(self.wall_ms, 1), "server_ms": round(self.server_ms, 1),
+                    "network_ms": round(max(0.0, self.wall_ms - self.server_ms), 1),
+                    "connections": self.connections}
+
+
+def diff_stats(after: dict[str, float], before: dict[str, float]) -> dict[str, float]:
+    return {k: round(after[k] - before.get(k, 0), 1) for k in after}
+
+
+_SERVER_TIMING = re.compile(r"dur=([0-9.]+)")
 
 
 class OllamaUnavailable(RuntimeError):
@@ -72,6 +118,60 @@ class OllamaClient:
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         self._status_timeout = REMOTE_STATUS_TIMEOUT if remote else STATUS_TIMEOUT
         self._model_timeout = REMOTE_MODEL_TIMEOUT if remote else MODEL_TIMEOUT
+        self.stats = NetStats()
+        self._http: httpx.Client | None = None
+        self._http_lock = threading.Lock()
+        self._streams: set[int] = set()
+
+    def _client(self) -> httpx.Client:
+        """One kept-alive client per runtime: every request through a tunnel
+        otherwise pays a fresh TLS handshake. Closed by `close()` (disconnect)."""
+        with self._http_lock:
+            if self._http is None:
+                self._http = httpx.Client(headers=self._headers, limits=httpx.Limits(
+                    max_connections=8, max_keepalive_connections=4, keepalive_expiry=120.0))
+            return self._http
+
+    def close(self) -> None:
+        with self._http_lock:
+            if self._http is not None:
+                self._http.close()
+                self._http = None
+
+    def _send(self, method: str, path: str, *, timeout: httpx.Timeout, body: dict[str, Any] | None = None) -> httpx.Response:
+        """One request. A remote client reuses its connection, gzips a large
+        body and records sizes and times; a local one is a plain call."""
+        url = f"{self.base_url}{path}"
+        if not self.remote:
+            if method == "GET":
+                return httpx.get(url, headers=self._headers, timeout=timeout)
+            return httpx.post(url, json=body, headers=self._headers, timeout=timeout)
+        http = self._client()
+        t = time.perf_counter()
+        if method == "GET":
+            r = http.get(url, timeout=timeout)
+            raw_out = wire_out = 0
+        else:
+            raw = json.dumps(body).encode()
+            headers = {"Content-Type": "application/json"}
+            payload = raw
+            if len(raw) >= GZIP_REQUEST_MIN_BYTES:
+                payload = gzip.compress(raw, compresslevel=5)
+                headers["Content-Encoding"] = "gzip"
+            r = http.post(url, content=payload, headers=headers, timeout=timeout)
+            raw_out, wire_out = len(raw), len(payload)
+        wall = (time.perf_counter() - t) * 1000
+        # Each connection has one network stream; a stream seen for the first time is a new connection.
+        stream = id(r.extensions.get("network_stream"))
+        with self._http_lock:
+            new_connection = stream not in self._streams
+            self._streams.add(stream)
+        m = _SERVER_TIMING.search(r.headers.get("server-timing", ""))
+        self.stats.add(calls=1, bytes_out_raw=raw_out, bytes_out_wire=wire_out,
+                       bytes_in_raw=len(r.content), bytes_in_wire=r.num_bytes_downloaded,
+                       wall_ms=wall, server_ms=float(m.group(1)) if m else 0.0,
+                       connections=int(new_connection))
+        return r
 
     @property
     def backend(self) -> str:
@@ -98,6 +198,9 @@ class OllamaClient:
         if r.status_code in (401, 403):
             return OllamaUnavailable("The Colab runtime refused the token. Connect again with the "
                                      "code the runtime printed.", "auth")
+        if r.status_code == 524:
+            return OllamaUnavailable("The request took longer than the tunnel's 100 s limit. "
+                                     "Send a smaller batch.", "timeout")
         if self.remote and _looks_like_html(r.text):
             return OllamaUnavailable(f"The tunnel answered {path} with an error page (HTTP {r.status_code}); "
                                      "the Colab runtime has probably stopped.")
@@ -105,7 +208,7 @@ class OllamaClient:
 
     def _get(self, path: str) -> Any:
         try:
-            r = httpx.get(f"{self.base_url}{path}", headers=self._headers, timeout=self._status_timeout)
+            r = self._send("GET", path, timeout=self._status_timeout)
         except httpx.HTTPError as e:
             raise self._down(e, "Ollama did not answer in time; it may be loading a model.") from None
         if r.status_code != 200:
@@ -116,8 +219,7 @@ class OllamaClient:
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         try:
-            r = httpx.post(f"{self.base_url}{path}", json=body, headers=self._headers,
-                           timeout=self._model_timeout)
+            r = self._send("POST", path, timeout=self._model_timeout, body=body)
         except httpx.HTTPError as e:
             raise self._down(e, "Ollama stopped answering; it may be busy with another app.") from None
         if r.status_code != 200:
@@ -126,6 +228,14 @@ class OllamaClient:
                 raise refused
             raise OllamaError(r.status_code, _error_text(r.text))
         return r.json()
+
+    def get_json(self, path: str) -> Any:
+        """A GET through the same transport (the worker's `/worker`)."""
+        return self._get(path)
+
+    def post_json(self, path: str, body: dict[str, Any]) -> Any:
+        """A POST through the same transport and error wording (the worker's `/rerank`)."""
+        return self._post(path, body)
 
     def version(self) -> str:
         return str(self._get("/api/version").get("version", ""))
@@ -160,6 +270,14 @@ class OllamaClient:
         ]
 
 
+    def unload(self, model: str) -> bool:
+        """Free a resident model now (`keep_alive: 0`) instead of after its 5-minute keep-alive.
+        Returns False, and sends nothing, when the model is not loaded."""
+        if not any(same_model(m.name, model) for m in self.resident()):
+            return False
+        self._post("/api/chat", {"model": model, "messages": [], "keep_alive": 0})
+        return True
+
     def gpu(self) -> dict[str, Any]:
         """The Colab gateway's GPU probe (nvidia-smi). Local Ollama has none."""
         return self._get("/api/gpu").get("gpu") or {}
@@ -188,6 +306,22 @@ class OllamaClient:
         if len(out) != len(texts):
             raise OllamaError(200, f"asked for {len(texts)} embeddings, got {len(out)}")
         return out
+
+    def chat(self, model: str, messages: list[dict[str, str]], *, options: dict[str, Any], think: bool = False,
+             format: dict[str, Any] | str | None = None, keep_alive: str | int | None = None) -> dict[str, Any]:
+        """One non-streaming `/api/chat`. `format` is a JSON schema (Ollama's structured outputs):
+        the reply's `message.content` is then JSON that follows it. Returns Ollama's whole reply,
+        so the caller can read `prompt_eval_count`, `eval_count` and `total_duration`.
+
+        `think` is always sent (see chat_stream). A remote `qwen3:8b` call must use one `num_ctx`
+        for the whole run: another value makes Ollama reload the model."""
+        body: dict[str, Any] = {"model": model, "messages": messages, "stream": False, "think": think,
+                                "options": options}
+        if format is not None:
+            body["format"] = format
+        if keep_alive is not None:
+            body["keep_alive"] = keep_alive
+        return self._post("/api/chat", body)
 
     def chat_stream(self, model: str, messages: list[dict[str, str]], *,
                     options: dict[str, Any], think: bool = False,

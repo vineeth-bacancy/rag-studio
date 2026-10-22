@@ -30,12 +30,237 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 5d | 3b with EmbeddingGemma 2 (in the app) | **9/9** | 5/6 | **10/11** | **11 · 0 · 0** | 9 · 3 · **2** | M4 ✓ |
 | 5e | 3a with Qwen3-Embedding 8B (Colab) | 8/9 | **6/6** | **10/11** | 9 · 0 · 2 | 8 · 3 · 3 | M4 ✓ |
 | 5f | 3b with Qwen3-Embedding 8B (Colab) | 8/9 | **6/6** | **10/11** | 9 · 0 · 2 | **10** · 2 · **2** | M4 ✓ |
-| 6 | Reranking (Qwen3-Reranker) | - | - | - | - | - | M5 |
-| 7 | Contextual retrieval | - | - | - | - | - | M5 |
-| 8 | Query rewriting | - | - | - | - | - | M5 |
-| 9 | The agentic loop | - | - | - | - | - | M5 |
+| 6a | 5c + Qwen3-Reranker 0.6B (top 20 → 5, on the T4) | **9/9** | **6/6** | 10/11 | 9 · 0 · 2 | 9 · 2 · 3 | M5 ✓ |
+| 6b | 5d + Qwen3-Reranker 0.6B | **9/9** | **6/6** | 10/11 | **11 · 0 · 0** | 9 · 2 · 3 | M5 ✓ |
+| 6c | 5c + Qwen3-Reranker 4B | **9/9** | **6/6** | 10/11 | **11 · 0 · 0** | 9 · 2 · 3 | M5 ✓ |
+| 6d | 5d + Qwen3-Reranker 4B | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
+| 6e | 5c + Qwen3-Reranker 8B (8-bit) | **9/9** | **6/6** | 10/11 | **11 · 0 · 0** | 9 · 2 · 3 | M5 ✓ |
+| 6f | 5d + Qwen3-Reranker 8B (8-bit) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | 10 · 1 · 3 | M5 ✓ |
+| 7a | 6c + context lines (PyMuPDF) | - | - | - | - | - | not measured (user: Docling only, to save T4 time) |
+| 7b | 6d + context lines written by qwen3:8b (Docling) | **9/9** | **6/6** | 10/11 | **11 · 0 · 0** | 10 · 2 · 2 | M5 ✓ |
+| 8a | 6c + split into parts (decomposition, qwen3:8b on Remote AI) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | 10 · 1 · 3 | M5 ✓ |
+| 8b | 6d + split into parts | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
+| 8c | 6c + several phrasings (multi-query) | **9/9** | **6/6** | 10/11 | **11 · 0 · 0** | 9 · 2 · 3 | M5 ✓ |
+| 8d | 6d + several phrasings | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
+| 8e | 6c + draft answer first (HyDE) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | 10 · 1 · 3 | M5 ✓ |
+| 8f | 6d + draft answer first | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
+| 9a | 8a + multi-step search (3 rounds, qwen3:8b on Remote AI) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | 10 · 1 · 3 | M5 ✓ |
+| 9b | 6d + multi-step search | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
 | 10 | A new answer model | - | - | - | - | - | M6 |
 | 11 | Figure paths | - | - | - | - | - | M7 |
+
+## Row 9, measured 2026-10-22
+
+**One change from each parser's best row 8: multi-step search.** After the
+normal search, qwen3:8b on the T4 (the `rewrite` role, prompt `agent-v1`)
+reads the first 6 passages and the searches tried, and decides to answer or to
+search again (a new query, optionally inside one validated document), at most
+3 rounds, 90 s and 8,000 tokens. All rounds' passages are pooled (RRF), the 4B
+reranks the pool against the question, and the top 5 go to qwen3:1.7b. Every
+decision was made once and replayed by the scorecards with Colab off.
+
+| Variant | Base | Run | Sets A+D | Recall A / B / D | MRR | Recall@20 | Run time |
+|---|---|---|---|---|---|---|---|
+| 9a | 8a (PyMuPDF + split into parts) | `20261022-131051-1240` | 21 · 1 · 3 | 9/9 · 6/6 · 11/11 | 0.952 | 26/26 | 488 s |
+| 9b | 6d (Docling) | `20261022-131905-b510` | **22 · 1 · 2** | 9/9 · 6/6 · 11/11 | 0.894 | 26/26 | 461 s |
+
+Decisions and 4B scores: `20261022-123453-98c3` (9a) and
+`20261022-123714-e629` (9b).
+
+| The loop, per 31 questions | 9a | 9b |
+|---|---|---|
+| Stopped: enough evidence / bad output | 28 / 3 | 28 / 3 |
+| Searched a second time | 7 | 4 |
+| Controller calls per question | 1.2 | 1.1 |
+| Latency per question, p50 / p95 (live, T4) | 4.1 s / 9.1 s | 4.0 s / 9.4 s |
+| Tokens per question (median) | 986 | 1,007 |
+| Searches limited to one document | 1 | 0 |
+
+**What row 9 says.**
+
+1. **Not one answer changed** against the row it builds on (9a = 8a, 9b = 6d,
+   question by question), and neither did retrieval (MRR and recall equal).
+   With the 4B reranker on top, the first search already holds the answer
+   pages; the extra rounds add passages the reranker then puts below them.
+2. **The controller is usually right to stop**: 28 of 31 stops are "enough
+   evidence" after round 1, including both traps.
+3. **10% of decisions are unusable**: every one is `action: "search"` with no
+   query (the schema does not require one). The loop stops cleanly and keeps
+   round 1's passages, so no answer is hurt, but `agent-v2` should require it.
+4. **Cost**: about 4 s and 1,000 tokens of T4 per question for no measured
+   gain here. With these three documents and a strong reranker, multi-step
+   search is not worth turning on; it may matter with more documents or a
+   weaker first stage (the 2026 papers in research §10 used much larger
+   corpora and controllers).
+
+**M5 ends with the defaults unchanged** (5d, prompt v3, dense, every switch
+off). The user decides which techniques become defaults: candidates are the
+4B reranker (Remote AI) or the 0.6B here (row 6), and split into parts for
+PyMuPDF (row 8).
+
+## Row 8, measured 2026-10-22
+
+**One change from each parser's best row so far: query rewriting.** qwen3:8b on
+the Colab T4 rewrites each question before it is searched
+(`docs/steps/08-rewrite-agent.md`); every rewrite was generated once (101 calls
+in 305 s, including Set E's follow-ups) and replayed by the scorecards with
+Colab off. The base is **6c** for PyMuPDF (no context lines: 7a not measured)
+and **6d** for Docling (7b lost a question). The 4B reranker re-reads the
+fused top 20 against the question as asked. Everything else as row 6.
+
+| Variant | Base + rewriting | Run | Sets A+D | Recall A / B / D | MRR | Recall@20 | Run time |
+|---|---|---|---|---|---|---|---|
+| 6c | PyMuPDF, none | `20261016-161323-dd49` | 20 · 2 · 3 | 9/9 · 6/6 · 10/11 | 0.925 | 25/26 | 441 s |
+| **8a** | 6c + split into parts | `20261022-082934-1484` | **21 · 1 · 3** | 9/9 · 6/6 · **11/11** | **0.952** | 26/26 | 555 s |
+| 8c | 6c + several phrasings | `20261022-083900-5409` | 20 · 2 · 3 | 9/9 · 6/6 · 10/11 | 0.925 | 25/26 | 527 s |
+| 8e | 6c + draft answer first | `20261022-084756-90f9` | **21 · 1 · 3** | 9/9 · 6/6 · **11/11** | 0.933 | 26/26 | 471 s |
+| 6d | Docling, none | `20261016-160533-549e` | **22 · 1 · 2** | 9/9 · 6/6 · 11/11 | 0.894 | 26/26 | 467 s |
+| 8b | 6d + split into parts | `20261022-085553-67f6` | **22 · 1 · 2** | 9/9 · 6/6 · 11/11 | 0.894 | 26/26 | 475 s |
+| 8d | 6d + several phrasings | `20261022-090353-c357` | **22 · 1 · 2** | 9/9 · 6/6 · 11/11 | 0.914 | 26/26 | 497 s |
+| 8f | 6d + draft answer first | `20261022-091217-0f71` | **22 · 1 · 2** | 9/9 · 6/6 · 11/11 | 0.878 | 26/26 | 506 s |
+
+**What row 8 says.**
+
+1. **Splitting a question helps where the question is two in one.** On
+   PyMuPDF, 8a fixes **D10** (GPO's library visits *and* the iMac's footprint:
+   refused, its pages outside the top 5 → Pass, rank 4) and moves A6 from rank
+   2 to 1; Set D recall reaches 11/11. Single-fact questions are passed through
+   unchanged, so nothing else moves.
+2. **Drafting an answer first (HyDE) also fixes D10 on PyMuPDF** (8e), though
+   its drafts invent facts ("FDsys was replaced by the Firefighter Digital
+   System"): it only searches with them, and the answer model never sees them.
+3. **Several phrasings change nothing measurable** (8c, 8d): the reranker
+   already had the answers in the top 5.
+4. **On Docling, no technique changes a single answer.** 6d with the 4B already
+   finds every answer page in its top 5; rewriting only moves ranks inside it
+   (MRR 0.878-0.914 against 0.894).
+5. **Cost.** One remote call per question (1.2-4.7 s each, through the tunnel,
+   as measured when they were generated); nothing when the question is
+   replayed from memory.
+
+**Best rows for row 9:** PyMuPDF **8a** (ties 8e on answers, higher MRR,
+rewrites only multi-part questions), Docling **6d** (every row-8 variant ties
+it). **Defaults are unchanged.**
+
+### Set E: follow-up questions (Docling 6d + 4B, measured 2026-10-22)
+
+Each follow-up is asked after a recorded first turn ("And for 2027?"). Scored
+as a chain: the rewrite holds every expected word → the answer page is in the
+top 5 → the answer passes.
+
+| How the follow-up was searched | Run | Rewrite right | Hits | Pass · Refused · Wrong |
+|---|---|---|---|---|
+| As typed (no memory) | `20261022-092354-264e` | - | 4/8 | 5 · 1 · 2 |
+| **Rewritten by Remote AI** (`standalone-v1`) | `20261022-092055-d263` | 6/8 | **7/8** | **7 · 0 · 1** |
+
+Memory is worth two answers and three hits here. The two rewrites that missed:
+E4 ("When was the old system retired?" came back unchanged, yet still found
+its page and passed) and E6 ("the year before" kept relative to FY 2018, and
+answered wrong). E7 (the MacBook Air, not in the documents) is refused either
+way, as it should be.
+
+## Row 7, measured 2026-10-22
+
+**One change from 6d: context lines.** Before each passage is embedded (and
+put in the word index), qwen3:8b on the Colab T4 writes one or two sentences
+placing it in its document (prompt `context-v1`, a window of the passage's
+section; `docs/steps/04-contextual.md`). The answer model never sees the lines.
+Everything else is 6d's: Docling + structure, EmbeddingGemma 2, prompt v3,
+dense search, the 4B reranker on the top 20, qwen3:1.7b. Only Docling was
+measured: the user chose to save the T4 time PyMuPDF's 1,044 remaining lines
+would take, so **7a is not measured** and PyMuPDF's row 8 builds on 6c.
+
+| Variant | Index | Run | Sets A+D | Recall A / B / D | MRR | Recall@20 | Run time |
+|---|---|---|---|---|---|---|---|
+| 6d (row 6) | `docling-structure-embeddinggemma2` | `20261016-160533-549e` | **22 · 1 · 2** | 9/9 · 6/6 · **11/11** | 0.894 | **26/26** | 467 s |
+| **7b** | `docling-structure-embeddinggemma2-ctx` | `20261022-081914-e582` | 21 · 2 · 2 | 9/9 · 6/6 · 10/11 | **0.925** | 25/26 | 557 s |
+
+Retrieval only, the same reranker: `20261022-075111-2af7`.
+
+**What row 7 says.**
+
+1. **Context lines rank better and answer no better.** MRR rises from 0.894
+   to 0.925 (D2 and D9 move from rank 2 to 1), but the scorecard loses one:
+   **D10** (GPO's library visits *and* the iMac's footprint) falls from rank 4
+   to 24 and is refused. A line written for each passage pulls it toward its
+   own document's framing, and the one question that needs two documents pays.
+2. **The cost is real.** 1.38 h of T4 time for 1,643 lines (median 2.9 s
+   each), a 21-minute rebuild here, and a job that met a tunnel timeout, an
+   over-strict length check and a runtime that died; each now resumes. 42% of
+   the lines still begin "The passage…" despite the prompt.
+3. **Docling's row 8 builds on 6d**, not 7b (fewer passes, and no extra
+   index to keep). The lines are exported (`data/context/…-ctx.jsonl`,
+   1.0 MB): they cannot be regenerated word for word.
+
+**Defaults are unchanged.**
+
+## Row 6, measured 2026-10-16
+
+**One change from row 5: a reranker** reads the dense top 20 together with the
+question and re-orders them; the top 5 go to the answer model. Everything else
+is 5c's or 5d's (prompt v3, dense exact search, qwen3:1.7b, thinking off,
+temperature 0). The reranker is Qwen3-Reranker at a pinned Hugging Face
+revision, with one recorded instruction ("Given a question about reports,
+retrieve the passage that states the answer"), scored as the logit of "yes"
+minus "no". Ranks 21-50 keep their order, so `search(5)` is still the first 5
+of `search(50)`.
+
+All six variants were scored on the Colab T4 (the user's choice: the 0.6B on
+this CPU takes 39 s per question at depth 20, against 0.65 s on the GPU). Every
+score is remembered (`data/cache/rerank/`): a retrieval-only run on the T4
+filled the cache, and the scorecards replayed the same scores with Colab
+disconnected. On this computer the 0.6B runs in fp32, on the T4 in fp16; their
+agreement was not measured.
+
+| Variant | Reranker (on the T4) | Run | Sets A+D | Recall A / B / D | MRR | Recall@20 | Run time |
+|---|---|---|---|---|---|---|---|
+| 6a | 0.6B fp16, PyMuPDF (5c) | `20261016-155304-d8f8` | 18 · 2 · 5 | 9/9 · 6/6 · 10/11 | 0.919 | 25/26 | 440 s |
+| 6b | 0.6B fp16, Docling (5d) | `20261016-154536-14cd` | 20 · 2 · 3 | 9/9 · **6/6** · 10/11 | 0.910 | 26/26 | 446 s |
+| 6c | 4B fp16, PyMuPDF | `20261016-161323-dd49` | 20 · 2 · 3 | 9/9 · 6/6 · 10/11 | 0.925 | 25/26 | 441 s |
+| **6d** | 4B fp16, Docling | `20261016-160533-549e` | **22 · 1 · 2** | 9/9 · **6/6** · **11/11** | 0.894 | 26/26 | 467 s |
+| 6e | 8B 8-bit, PyMuPDF | `20261016-163320-969d` | 20 · 2 · 3 | 9/9 · 6/6 · 10/11 | 0.944 | 25/26 | 455 s |
+| 6f | 8B 8-bit, Docling | `20261016-162547-2a69` | 21 · 1 · 3 | 9/9 · **6/6** · **11/11** | **0.946** | 26/26 | 451 s |
+
+Row 5 for comparison: 5c 18 · 2 · 5, MRR 0.899; 5d 20 · 3 · 2, MRR 0.822,
+Set B 5/6 (B4 missed at rank 8). MRR and recall@20 count the first answer page
+50 deep over all 26 questions with answer pages (A, B and D). Run times are
+the scorecards replaying remembered scores; reranking itself costs 0.65 s
+(0.6B), 3.3 s (4B) and 5.5 s (8B) of T4 time per question, plus about 0.3 s of
+network (`docs/02-remote-gpu.md`).
+
+Retrieval only, the same rerankers on three indexes (runs
+`20261016-152028-caa4` … `-153858-68d2`):
+
+| Index | B4 "global growth" without → 0.6B / 4B / 8B | Set D recall 0.6B / 4B / 8B |
+|---|---|---|
+| Baseline (row 1) | rank 11 → **1 / 2 / 1** | 10 / 11 / 11 |
+| 5c PyMuPDF | rank 3 → **1 / 1 / 1** | 10 / 10 / 10 |
+| 5d Docling | rank 8 → **1 / 1 / 1** | 10 / 11 / 11 |
+
+**What row 6 says.**
+
+1. **M5's target is met: B4 is a Hit on 5d**, at rank 1 with every reranker
+   (6b, 6d, 6f; it was rank 8). On the baseline index it moves from 11 to 1-2.
+   A reranker reads the question and the passage together, so "global growth"
+   beats passages that are only about growth.
+2. **6d (Docling + 4B) is the best row on the ladder: 22 · 1 · 2**, with every
+   recall at its maximum. Against 5d it passes D7 and D10 (both refused
+   before; D10's page moves from beyond 5 to rank 4).
+3. **Bigger is not simply better.** The 8B ranks best (MRR 0.946) but scores
+   21 · 1 · 3: D11 turns from a refusal into a wrong answer with its page at
+   rank 1. The 0.6B on PyMuPDF (6a) ties 5c, and turns A4 wrong with its page
+   still at rank 1: a reordered top 5 changes what the small answer model
+   reads next to the answer.
+4. **D6 (Thailand, a table row) stays wrong on PyMuPDF** at every size, its
+   page at rank 1-3: the flattened table, not retrieval, is the problem
+   (Docling keeps the row whole).
+5. **Cost.** On this CPU the 0.6B adds 39 s per question and needs about
+   4 GB of free memory beside EmbeddingGemma 2. On the T4 the 4B adds 3.6 s
+   per question.
+
+**Defaults are unchanged** (5d, prompt v3, dense, reranker off): every technique
+is a switch until the user decides at the end of M5. The candidate is the 4B
+on Remote AI, or the 0.6B here when Colab is off.
 
 ## Row 5, measured 2026-10-15
 

@@ -51,10 +51,18 @@ export const api = {
     prompt?: string;
     search?: SearchMethod;
     section_cap?: number | null;
+    rerank?: string;
+    rewrite?: string;
+    agent_rounds?: number;
+    as_typed?: boolean;
   }) => request<{ id: string }>("/eval/runs", { method: "POST", body: JSON.stringify(body) }),
   /** Measure approximate indexes against exact search on one build (5-60 s). */
   annCheck: (profile: string) =>
     request<AnnCheck>(`/learn/store/ann-check?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  // Conversations (M5)
+  chats: () => request<{ chats: ChatBrief[] }>("/chats"),
+  chat: (id: string) => request<ChatFull>(`/chats/${encodeURIComponent(id)}`),
+  deleteChat: (id: string) => request<{ id: string; deleted: boolean }>(`/chats/${encodeURIComponent(id)}`, { method: "DELETE" }),
   cancelRun: (id: string) =>
     request<{ id: string; cancelling: boolean }>(`/eval/runs/${id}/cancel`, { method: "POST" }),
 
@@ -66,13 +74,20 @@ export const api = {
     }),
   cancelBuild: (profile: string) =>
     request<{ profile: string; cancelling: boolean }>(`/indexes/${encodeURIComponent(profile)}/cancel`, { method: "POST" }),
+  /** Context lines (M5): write the missing ones on Remote AI in the background, or stop. */
+  writeContext: (profile: string) =>
+    request<{ profile: string; job: ContextJobFile | null }>(`/indexes/${encodeURIComponent(profile)}/context`, { method: "POST" }),
+  cancelContext: (profile: string) =>
+    request<{ profile: string; cancelling: boolean }>(`/indexes/${encodeURIComponent(profile)}/context/cancel`, { method: "POST" }),
   /** The vector match check: up to two minutes on this CPU. */
   matchCheck: (profile: string) =>
     request<MatchCheck>(`/indexes/${encodeURIComponent(profile)}/check`, { method: "POST" }),
 
   // Remote AI (M4)
   llmStatus: (probe = false) => request<LlmSnapshot>(`/llm/status${probe ? "?probe=true" : ""}`),
-  llmColab: () => request<ColabCell>("/llm/colab"),
+  /** The setup cell. `models` is space-separated Ollama tags; `worker` the GPU worker's jobs, comma-separated. */
+  llmColab: (job?: { models?: string; worker?: string }) =>
+    request<ColabCell>(`/llm/colab${job ? `?${new URLSearchParams(Object.entries(job).filter(([, v]) => v) as [string, string][])}` : ""}`),
   llmConnect: (body: { code?: string; url?: string; token?: string }) =>
     request<ConnectResult>("/llm/connect", { method: "POST", body: JSON.stringify(body) }),
   llmTest: () => request<SmokeTest & LlmSnapshot>("/llm/test", { method: "POST" }),
@@ -95,6 +110,11 @@ export const api = {
       prompt?: string;
       search?: SearchMethod;
       section_cap?: number | null;
+      rerank?: string;
+      rewrite?: string;
+      agent_rounds?: number;
+      chat_id?: string;
+      as_typed?: boolean;
     },
     onEvent: (event: AskEvent) => void,
     signal?: AbortSignal,
@@ -163,6 +183,10 @@ export interface AppStatus {
     error: string | null;
   };
   documents: number;
+  default_profile: string;
+  build_command: string;
+  /** What the first question loads in this app, and what is free now (GB). */
+  memory: { needed_gb: number | null; free_gb: number | null; short: boolean };
   indexed: boolean;
   index: { profile: string; label: string; rows: number; built_at: string } | null;
   version: string;
@@ -209,9 +233,22 @@ export interface RoleRow {
   purpose: string;
   model: string | null;
   runs_on: "ollama" | "python";
+  /** local: this computer (Ollama or this app); remote: the Colab runtime only, with no local fallback. */
+  where: "local" | "remote";
+  /** Remote roles: whether a runtime is connected. */
+  connected?: boolean;
   arrives: string | null;
+  /** Ollama: pulled; this app: downloaded at its pinned revision; Remote AI: served by the runtime. null = unknown. */
   installed: boolean | null;
   loaded: boolean | null;
+}
+
+/** One technique default, read from the engine (health.technique_defaults). */
+export interface TechniqueDefault {
+  key: string;
+  label: string;
+  value: string;
+  id?: string;
 }
 
 export interface DocumentFile {
@@ -241,6 +278,8 @@ export interface HealthReport {
     error: string | null;
   };
   roles: RoleRow[];
+  /** What Ask and a run use unless told otherwise. */
+  defaults?: TechniqueDefault[];
   documents: DocumentFile[];
   app: { version: string; python: string; platform: string; ollama_url: string };
 }
@@ -287,6 +326,10 @@ export interface Source {
   label?: string | null;
   /** Where the passage ranked in each list before fusion or the section limit. */
   ranks?: SearchRanks;
+  /** The reranker's score for it (higher is better); null when it was not reranked. */
+  rerank_score?: number | null;
+  /** The line that places the passage in its document (contextual retrieval). Embedded with the passage, never shown to the answer model. */
+  context?: string | null;
   /** Moved behind the others by "Limit per section". */
   capped?: boolean;
   /** Instruction-like phrases in the passage. Shown, never hidden. */
@@ -296,7 +339,7 @@ export interface Source {
 export type SearchMethod = "dense" | "bm25" | "hybrid";
 
 /** A passage's rank in each list it was searched in; null when it was not in that list. */
-export type SearchRanks = Partial<Record<"dense" | "bm25", number | null>>;
+export type SearchRanks = Partial<Record<string, number | null>>;
 
 /** How a question was searched, as the engine records it (retrieve.py `SearchSpec.describe()`). */
 export interface SearchDescribe {
@@ -308,6 +351,13 @@ export interface SearchDescribe {
   depth?: number;
   section_cap?: number;
   word_index?: { name: string; column: string; settings: Record<string, unknown> } | null;
+  /** A reranker id (or, in a recorded run, its full description) and how many passages it reads. */
+  rerank?: string | Record<string, unknown>;
+  rerank_depth?: number;
+  /** decompose, multi or hyde (or, in a recorded run, its full description). */
+  rewrite?: string | Record<string, unknown>;
+  agent_rounds?: number;
+  agent?: Record<string, unknown>;
 }
 
 export interface IndexInfo {
@@ -330,7 +380,14 @@ export interface IndexInfo {
 }
 
 export interface AskReady {
+  /** The question as typed. */
   question: string;
+  /** What was searched: a follow-up made whole by Remote AI (the same text when it was not rewritten). */
+  searched_for?: string;
+  standalone_question?: string | null;
+  /** true: rewritten; false: asked as typed on purpose; null: not a follow-up. */
+  rewritten?: boolean | null;
+  chat_id?: string;
   sources: Source[];
   prompt: {
     version: string;
@@ -373,12 +430,44 @@ export interface AskDone extends AskReady {
   usage: Usage;
   trace: TraceStep[];
   total_ms: number;
+  /** Set when the answer could not be saved to its conversation (the answer itself is fine). */
+  chat_warning?: string;
 }
 
 export interface AskError {
   stage: string;
   error: string;
   trace?: TraceStep[];
+  chat_id?: string;
+  /** A follow-up that Remote AI could not rewrite can be sent as typed. */
+  can_ask_as_typed?: boolean;
+}
+
+/** A saved conversation (rag_studio/chat.py). Sources are references, never copies of passages. */
+export interface ChatTurn {
+  question: string;
+  standalone_question: string | null;
+  rewritten: boolean | null;
+  answer: string;
+  refused: boolean;
+  citations: { n: number; chunk_id: string; doc_id: string; page: number }[];
+  sources: { n: number; chunk_id: string; doc_id: string; page: number }[];
+  setup: Record<string, unknown>;
+  trace: { id: string; ms: number }[];
+  total_ms: number | null;
+  at: string;
+}
+
+export interface ChatBrief {
+  id: string;
+  title: string | null;
+  turns: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ChatFull extends Omit<ChatBrief, "turns"> {
+  turns: ChatTurn[];
 }
 
 export type AskEvent =
@@ -507,6 +596,8 @@ export interface IndexProfileRow {
   chunker: string;
   /** Whether its passages carry section labels (prompt v4 expects them). */
   labels: boolean;
+  /** Whether a model-written context line is embedded with each passage (M5, ladder row 7). */
+  contextual?: boolean;
   /** Whether the build has a word index, so BM25 and hybrid search can run. */
   word_index: boolean;
   /** The active build's manifest; null until the profile is built. */
@@ -537,9 +628,27 @@ export interface SearchMethodInfo {
   explain: string;
 }
 
+/** Rerankers (rag_studio/rerank.py `availability`): where each runs and whether it can run now. */
+export interface Reranker {
+  id: string;
+  label: string;
+  where: "local" | "colab";
+  model: string;
+  can: Can;
+}
+
+export interface RerankersResponse {
+  depth: number;
+  rerankers: Reranker[];
+  /** Whether Remote AI can rewrite questions now (connected, serving the rewrite model), and why not. */
+  rewrite?: Can;
+}
+
 export interface IndexesResponse {
   profiles: IndexProfileRow[];
   search_methods: SearchMethodInfo[];
+  /** The index the app uses unless told otherwise (rag_studio/profiles.py DEFAULT). */
+  default_profile: string;
   remote?: { connected: boolean; host: string | null; models: string[] | null; connected_at: string | null };
   free_ram_gb?: number | null;
   active_build?: BuildJob | null;
@@ -618,6 +727,8 @@ export interface RemoteProbe {
   loaded?: { name: string; size: number; size_vram: number; on_gpu: boolean; fully_on_gpu: boolean }[];
   gpu?: { available: boolean; reason?: string; gpus?: { name: string; memory_total_mb: number; memory_used_mb: number; utilization_pct: number }[] };
   missing?: string[];
+  /** The GPU worker (tools/colab/worker.py): the rerankers it serves, the one loaded, and whether it writes context lines. */
+  worker?: { loaded: string | null; served: string[]; context?: boolean; vram?: { peak_mb?: number | null } | null } | null;
 }
 
 export interface LlmSnapshot {
@@ -632,6 +743,9 @@ export interface SmokeTest {
   error_kind: string | null;
   seconds: number | null;
   embedded: { model: string; digest: string | null; dimensions: number; seconds: number }[];
+  /** Chat models that answered a one-token chat. */
+  chatted?: { model: string; seconds: number }[];
+  worker?: { loaded: string | null; served: string[] } | null;
 }
 
 export interface ConnectResult extends SmokeTest {
@@ -643,6 +757,8 @@ export interface ConnectResult extends SmokeTest {
 export interface ColabCell {
   cell: string;
   models: string[];
+  /** The GPU worker's jobs: rerankers by id, and "context" for context lines. */
+  worker?: string[];
   ollama_version: string | null;
   files: string[];
   tokenless: boolean;
@@ -765,6 +881,8 @@ export interface GoldenSet {
   description: string;
   source?: string;
   scored: boolean;
+  /** Set E: its follow-ups are rewritten by Remote AI unless asked as typed. */
+  remote_only?: boolean;
   questions: GoldenQuestion[];
 }
 
@@ -806,7 +924,76 @@ export interface RunResult {
   usage: Usage | null;
   error: string | null;
   /** embed_ms is null for a BM25-only search (no question vector). */
-  timings: { embed_ms: number | null; search_ms: number; generate_ms: number | null };
+  timings: { embed_ms: number | null; search_ms: number; generate_ms: number | null; rerank_ms?: number };
+  // M5 (rag_studio/eval.py `_search_one`): each is null when its switch was off.
+  /** Where the first answer page ranked before and after the reranker, and whether its scores were remembered. */
+  rerank?: { before_rank: number | null; after_rank: number | null; cache: "hit" | "miss" | null; compute_ms: number | null } | null;
+  /** Each Remote AI output this question used, in order: the follow-up rewrite, the rewrite, each round's decision. */
+  rewrites?: RewriteRecord[] | null;
+  /** Multi-step search, round by round (round 1 is the normal search). */
+  rounds?: RoundRecord[] | null;
+  /** How the multi-step search ended. */
+  agent?: { stop: string; stop_text: string; tokens: number; seconds: number; rounds_used: number } | null;
+  /** What crossed the tunnel, per remote step (followup, rewrite, rerank). */
+  network?: Record<string, NetRecord> | null;
+  /** Set E: the follow-up as Remote AI made it whole; null when asked as typed. */
+  standalone_question?: string | null;
+  /** "hit" (remembered, no call) or "miss" (asked) per remote output. */
+  cache?: Record<string, string> | null;
+  /** Set E: the recorded earlier turn(s). */
+  history?: { question: string; answer: string }[];
+  /** Set E: the rewrite held every expected word and no forbidden one; null when not rewritten. */
+  rewrite_ok?: boolean | null;
+}
+
+export interface RewriteRecord {
+  technique: "standalone" | "decompose" | "multi" | "hyde" | "agent" | string;
+  value: {
+    standalone?: string;
+    questions?: string[];
+    queries?: string[];
+    passage?: string;
+    action?: string;
+    query?: string | null;
+    doc?: string | null;
+    reason?: string;
+  };
+  cache: string;
+  seq: number | null;
+  ms: number | null;
+  tokens: { prompt?: number | null; answer?: number | null };
+  network: NetRecord | null;
+}
+
+export interface RoundRecord {
+  round: number;
+  /** search, answer (enough evidence) or stop. */
+  action: string;
+  query?: string | null;
+  doc?: string | null;
+  reason?: string | null;
+  cache?: string | null;
+  /** New passages this round put in the top 10. */
+  new?: number;
+  found?: number;
+}
+
+export interface NetRecord {
+  calls?: number;
+  bytes_out_raw?: number;
+  bytes_out_wire?: number;
+  bytes_in_raw?: number;
+  bytes_in_wire?: number;
+  wall_ms?: number;
+  server_ms?: number;
+  connections?: number;
+}
+
+/** MRR and recall@20 from the deep search (eval.py `ranking_stats`); null when no question counted. */
+export interface RankingStats {
+  n: number;
+  mrr: number | null;
+  recall20: number | null;
 }
 
 export interface RunSummary {
@@ -816,6 +1003,12 @@ export interface RunSummary {
   questions: number;
   errors: number;
   answer_seconds: number;
+  /** Every run has it: older ones are filled in from their recorded ranks. */
+  ranking?: RankingStats & { single: RankingStats; multi: RankingStats };
+  /** Follow-ups rewritten right, of those rewritten; null when none were. */
+  rewrite?: { ok: number; total: number } | null;
+  /** Set E's chain: rewritten right, then found, then answered right; null when no follow-up was asked. */
+  followups?: { n: number; rewritten: number; rewrite_ok: number; hits: number; scored: number; passes: number } | null;
 }
 
 export interface RunBrief {
@@ -832,8 +1025,16 @@ export interface RunBrief {
     model: string | null;
     prompt_version: string;
     profile: string;
-    /** Missing on runs made before M3 (all dense, no limit). */
-    search?: { method: SearchMethod; section_cap: number | null };
+    /** Missing on runs made before M3 (all dense, no limit). M5 keys appear only when on. */
+    search?: {
+      method: SearchMethod;
+      section_cap: number | null;
+      rerank?: string;
+      rerank_depth?: number;
+      rewrite?: string;
+      agent_rounds?: number;
+    };
+    as_typed?: boolean;
   };
   sets: Record<string, { name: string; scored: boolean }>;
   progress: { done: number; total: number };
@@ -854,6 +1055,16 @@ export interface RunBrief {
     retrieval: string;
     /** "Limit per section"; null or missing when off. */
     section_cap?: number | null;
+    /** M5 (eval.py `_brief`): each null when off. `rerank` is "qwen3-4b (top 20)"; `rerank_name` is the picker's name. */
+    rerank?: string | null;
+    rerank_name?: string | null;
+    rerank_depth?: number | null;
+    rewrite?: string | null;
+    agent_rounds?: number | null;
+    /** Set E's follow-ups: "rewritten" or "as typed"; null when the run asked none. */
+    followup?: "rewritten" | "as typed" | null;
+    /** The index embeds a context line with each passage. */
+    contextual?: boolean;
     answer_model: string | null;
     prompt_version: string | null;
   };
@@ -878,6 +1089,10 @@ export interface RunConfig {
   } | null;
   app_version: string;
   ollama_version: string;
+  /** Set E: how follow-ups were handled (the standalone prompt's description, or as typed). */
+  followup?: { as_typed?: boolean; prompt_version?: string; prompt_sha256?: string; model?: string } | null;
+  /** Facts that vary between runs of one setup (where the reranker ran, the runtime's GPU). Never grouped on. */
+  runtime?: Record<string, Record<string, unknown>> | null;
 }
 
 export interface Run extends Omit<RunBrief, "config"> {
@@ -1004,9 +1219,19 @@ export interface SearchLab {
   test_question: string | null;
   targets: Target[];
   word_index: boolean;
-  lists: Record<SearchMethod, LabList | null>;
+  /** `reranked` appears only when the lab was asked to rerank (it is slow). */
+  lists: Record<SearchMethod, LabList | null> & { reranked?: RerankedList };
   timings: Record<string, number>;
   rrf_k: number;
+}
+
+/** The dense top 20 re-read with the question by a reranker (learn.search_lab with `rerank`). */
+export interface RerankedList {
+  hits: (LabHit & { rank_before: number | null; rerank_score: number | null })[];
+  first_answer_rank: number | null;
+  reranker: Record<string, unknown>;
+  label: string;
+  ms: number;
 }
 
 export interface AnnResult {
@@ -1041,4 +1266,140 @@ export interface StoreFacts {
   word_index: { name: string; column: string; settings: Record<string, unknown>; table_version?: number } | null;
   builds: { table: string; built_at: string; rows: number; active: boolean }[];
   ann: AnnCheck | null;
+}
+
+/** How it works, step 4 (rag_studio/learn.py `context_lab`). Read from the context-line cache: no model call. */
+export interface ContextJob {
+  /** running, done, failed, cancelled; "interrupted" when the job's process is gone. */
+  status: string | null;
+  done: number | null;
+  total: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ContextPassage {
+  chunk_id: string;
+  doc_id: string;
+  page: number;
+  section_path: string | null;
+  kind: string;
+  label: string | null;
+  text: string;
+  /** null: no context line written for this passage yet. */
+  context: string | null;
+  /** The index's document prefix, which the embedding model reads first. */
+  doc_prefix: string;
+  /** Exactly what is embedded: prefix, section label, then the passage. */
+  embedded_before: string;
+  /** The same with the context line between the label and the passage; null without a line. */
+  embedded_after: string | null;
+  /** The part of the document the model read to write the line, shared by every passage in it. */
+  window: { passages: number; position: number; chars: number; est_tokens: number; head: string };
+  /** This passage's rank for the test question on each built index (null: not in the top 50). */
+  ranks?: Partial<Record<"plain" | "ctx", number | null>>;
+}
+
+export interface ContextRankSide {
+  profile: string;
+  /** Where the first answer page ranked, searching 50 deep; null when not in the top 50. */
+  first_answer_rank: number | null;
+  top: { rank: number; chunk_id: string; doc_id: string; page: number; answer_page: boolean }[];
+}
+
+export interface ContextLab {
+  profile: string;
+  label: string;
+  plain_profile: string;
+  plain_label: string | null;
+  coverage: {
+    passages: number;
+    written: number;
+    /** Windows: section-contiguous blocks, each read once per passage in it. */
+    blocks: number;
+    digest: string | null;
+    built: boolean;
+    plain_built: boolean;
+    rows: number | null;
+    /** Whether data/context/<profile>.jsonl exists (the lines' backup). */
+    export: boolean;
+    job: ContextJob | null;
+  };
+  profiles: { id: string; label: string; parser: string; built: boolean; job: ContextJob | null }[];
+  describe: { model: string; prompt_version: string; prompt_sha256: string; window_policy: string; num_ctx: number };
+  prompt: { system: string; suffix: string };
+  passage: ContextPassage | null;
+  samples: { chunk_id: string; doc_id: string; page: number; section_path: string | null; context: string; text: string }[];
+  /** null without a test question; a side is null when that index is not built. */
+  ranking: {
+    id: string;
+    question: string;
+    targets: Target[];
+    plain: ContextRankSide | null;
+    ctx: ContextRankSide | null;
+  } | null;
+  timings: Record<string, number>;
+}
+
+/** How it works, step 8 (rag_studio/learn.py `rewrite_lab`): one technique as a recorded run used it. */
+export interface RewriteLabTechnique {
+  /** asked, decompose, multi, hyde, agent; for a follow-up: followup, as_typed. */
+  technique: string;
+  /** null: no finished run on this index has used it for this question yet. */
+  run_id: string | null;
+  label?: string | null;
+  ladder?: { row: number; label: string } | null;
+  mode?: "answer" | "retrieval";
+  search?: Record<string, unknown>;
+  result?: RunResult;
+}
+
+export interface RewriteLab {
+  question_id: string;
+  question: string;
+  history: { question: string; answer: string }[] | null;
+  targets: Target[];
+  profile: string;
+  label: string;
+  techniques: RewriteLabTechnique[];
+}
+
+/** Step 8, live (`rewrite_live`): one question searched now with one technique. */
+export interface RewriteLive {
+  question: string;
+  test_question: string | null;
+  targets: Target[];
+  profile: string;
+  technique: string;
+  steps: TraceStep[];
+  hits: LabHit[];
+  first_answer_rank: number | null;
+  cache: Record<string, string> | null;
+  network: Record<string, NetRecord> | null;
+  ms: number;
+}
+
+/** A context-line job (rag_studio/context.py `write_lines`), as its job file records it. */
+export interface ContextJobFile {
+  profile: string;
+  status: "running" | "done" | "failed" | "cancelled" | "interrupted";
+  stage: string;
+  done: number;
+  total: number | null;
+  error: string | null;
+  started_at: string;
+  finished_at?: string;
+  summary?: { lines: number; seconds: number; lines_per_s: number | null; timeouts?: number; rejected?: number } | null;
+}
+
+/** GET /api/indexes/{id}/context. */
+export interface ContextStatus {
+  profile: string;
+  passages: number;
+  written: number;
+  blocks: number;
+  digest: string | null;
+  job: ContextJobFile | null;
+  can: Can;
+  model: string;
 }

@@ -84,3 +84,53 @@ def test_malformed_questions_are_refused(bad):
     with pytest.raises(ev.GoldenError):
         ev._validate("t.json", {"id": "t", "name": "T", "description": "", "scored": True,
                                 "questions": [bad]})
+
+
+# ------------------------------------------------------------------ Set E (follow-ups)
+
+def test_set_e_is_valid_remote_only_and_every_case_has_a_recorded_first_turn():
+    from rag_studio import eval as ev
+    e = ev.load_sets()["set-e"]
+    assert e["remote_only"] is True and e["scored"] is True and 6 <= len(e["questions"]) <= 8
+    for q in e["questions"]:
+        assert q["history"] and all(t["question"] and t["answer"] for t in q["history"])
+        assert q["standalone_expect"] and q["question"].strip()
+    traps = [q for q in e["questions"] if q["expect"] == "REFUSE"]
+    assert len(traps) == 1 and traps[0]["id"] == "E7" and not ev.targets(traps[0])
+    assert any(q.get("standalone_forbid") for q in e["questions"])             # the change of subject
+
+
+def test_set_e_answer_pages_exist_in_the_pdfs():
+    from rag_studio import eval as ev
+    assert [p for p in ev.check_pages({"set-e": ev.load_sets()["set-e"]})] == []
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"history": []}, "recorded turns"),
+    ({"history": [{"question": "q"}]}, "recorded turns"),
+    ({"standalone_expect": []}, "must contain"),
+    ({"standalone_forbid": [3]}, "must not contain"),
+])
+def test_a_bad_follow_up_case_is_refused_with_its_name(change, message):
+    from rag_studio import eval as ev
+    q = {"id": "X1", "question": "And?", "history": [{"question": "q", "answer": "a"}], "doc_id": "d",
+         "answer_pages": [1], "expect": ["x"]} | change
+    with pytest.raises(ev.GoldenError, match=message):
+        ev._validate("set_x.json", {"id": "set-x", "name": "X", "description": "d", "scored": True, "questions": [q]})
+
+
+def test_a_rewrite_check_needs_a_history_to_check():
+    from rag_studio import eval as ev
+    q = {"id": "X1", "question": "?", "standalone_expect": ["a"], "doc_id": "d", "answer_pages": [1], "expect": ["x"]}
+    with pytest.raises(ev.GoldenError, match="only be checked for a question with a 'history'"):
+        ev._validate("set_x.json", {"id": "set-x", "name": "X", "description": "d", "scored": True, "questions": [q]})
+
+
+def test_the_rewrite_is_judged_by_its_words():
+    from rag_studio import eval as ev
+    q = {"history": [{"question": "q", "answer": "a"}], "standalone_expect": ["iMac", "stand"],
+         "standalone_forbid": ["GPO"]}
+    assert ev.rewrite_ok(q, "What is the iMac stand made of?") is True
+    assert ev.rewrite_ok(q, "What is the iMac stand made of, GPO?") is False       # carried the old subject over
+    assert ev.rewrite_ok(q, "What is it made of?") is False
+    assert ev.rewrite_ok(q, None) is None and ev.rewrite_ok({"standalone_expect": ["a"]}, "a") is None

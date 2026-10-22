@@ -24,12 +24,14 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Iterator
 
-from rag_studio import guard, profiles
+from rag_studio import guard, profiles, retrieve
 from rag_studio.config import OLLAMA_URL, role_model
 from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
 from rag_studio.prompt import (DEFAULT_VERSION, REFUSAL, build_messages, estimate_tokens,
                                looks_truncated, prompt_chars, prompt_sha256)
-from rag_studio.retrieve import DENSE, Retriever, SearchSpec, retriever as active_retriever
+from rag_studio.rerank import RerankError
+from rag_studio.retrieve import DENSE, Found, Retriever, SearchSpec, retriever as active_retriever
+from rag_studio.rewrite import RewriteBadOutput, RewriteUnavailable
 from rag_studio.trace import Trace
 
 Event = tuple[str, dict[str, Any]]
@@ -88,17 +90,28 @@ def _source(hit: dict[str, Any], n: int) -> dict[str, Any]:
             "char_start": hit["char_start"], "char_end": hit["char_end"],
             # Where it ranked in each list before fusion (hybrid) or the cap.
             "ranks": hit.get("ranks") or {}, "capped": bool(hit.get("capped")),
+            "rerank_score": hit.get("rerank_score"),
+            # The line that placed the passage in its document (contextual
+            # retrieval). It was embedded, not shown to the answer model.
+            "context": hit.get("context"),
             # Checked live, so a passage from any index is screened the same way.
             "flags": guard.instruction_flags(hit["text"])}
-
-
-_BY = {"dense": "by meaning", "bm25": "by words (BM25)", "hybrid": "by meaning and by words (hybrid)"}
 
 
 def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
         profile_id: str = profiles.DEFAULT, prompt_version: str = DEFAULT_VERSION,
         search: SearchSpec = DENSE,
-        retriever: Retriever | None = None, client: OllamaClient | None = None) -> Iterator[Event]:
+        retriever: Retriever | None = None, client: OllamaClient | None = None,
+        found: Found | None = None, history: list[dict[str, str]] | None = None,
+        as_typed: bool = False) -> Iterator[Event]:
+    """`found` is a retrieval already done by `retrieve.run` (an evaluation
+    searches once and answers from that, so the score and the answer always
+    describe the same passages). Without it, `ask` runs the retrieval itself.
+
+    `history` is the conversation so far (`[{question, answer}]`): a follow-up is first made a full
+    question by Remote AI, and the answer model sees **that question and the passages, never the
+    conversation** (memory acts only through the rewrite, so answers stay comparable with the
+    scorecard). `as_typed` skips the rewrite and searches the question as typed."""
     question = question.strip()
     if not question:
         yield "error", {"stage": "input", "error": "Type a question first."}
@@ -109,29 +122,30 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
     stage = "search"
     try:
         r = retriever or active_retriever(profile_id)
-        hits, found = r.search(question, k, search)
-        t = found["timings"]
-        if "embed_ms" in t:
-            trace.add("embed", "Embedded the question", t["embed_ms"],
-                      model=r.profile.embedding.model, prefix=r.profile.embedding.query_prefix,
-                      backend=r.embedder.backend)
-            yield "stage", trace.steps[-1].as_dict()
-        search_ms = t.get("search_ms", 0) + t.get("bm25_ms", 0) + t.get("fuse_ms", 0)
-        trace.add("search", f"Searched {r.manifest['rows']:,} passages {_BY[search.method]}", search_ms,
-                  **search.describe(), k=k,
-                  lists={name: [{"rank": h["rank"], "chunk_id": h["chunk_id"]} for h in hits_[:max(k, 10)]]
-                         for name, hits_ in found["lists"].items()},
-                  capped=sum(1 for h in hits if h.get("capped")),
-                  timings={key: round(v, 1) for key, v in t.items()})
-        yield "stage", trace.steps[-1].as_dict()
+        if found is None:
+            for kind, payload in retrieve.run(question, retriever=r, k=k, spec=search, history=history,
+                                              as_typed=as_typed):
+                if kind == "stage":
+                    trace.steps.append(payload)
+                    yield "stage", payload.as_dict()
+                else:
+                    found = payload
+        else:
+            for payload in found.steps:      # recorded when it was searched; shown as it was
+                trace.steps.append(payload)
+                yield "stage", payload.as_dict()
+        assert found is not None
+        hits = found.hits[:k]
+        asked = question
+        question = found.standalone_question or question        # what is searched and what the model is asked
 
         stage = "guard"
         t0 = time.perf_counter()
         sources = [_source(h, n) for n, h in enumerate(hits, start=1)]
-        asked = guard.instruction_flags(question)
+        flags = guard.instruction_flags(asked)             # the typed question is what a person could have tampered with
         flagged = [s["n"] for s in sources if s["flags"]]
-        trace.add("guard", _guard_label(asked, flagged), (time.perf_counter() - t0) * 1000,
-                  question_flags=asked, flagged_passages=flagged)
+        trace.add("guard", _guard_label(flags, flagged), (time.perf_counter() - t0) * 1000,
+                  question_flags=flags, flagged_passages=flagged)
         yield "stage", trace.steps[-1].as_dict()
 
         stage = "prompt"
@@ -144,7 +158,9 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
         yield "stage", trace.steps[-1].as_dict()
 
         info = {
-            "question": question,
+            "question": asked, "searched_for": question,      # as typed, and as searched (a follow-up made whole)
+            "standalone_question": found.standalone_question,
+            "rewritten": (False if (history and as_typed) else True if found.standalone_question else None),
             "sources": sources,
             "prompt": {"version": prompt_version, "sha256": prompt_sha256(prompt_version),
                        "messages": messages, **budget},
@@ -198,6 +214,10 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
     except OllamaUnavailable as e:
         yield "error", {"stage": stage, "error": f"AI unavailable. {e.reason}",
                         "trace": trace.as_list()}
+    except (RewriteUnavailable, RewriteBadOutput, RerankError) as e:
+        # Short explanation, then what to do: these messages are written that way.
+        yield "error", {"stage": stage, "error": str(e), "trace": trace.as_list(),
+                        "can_ask_as_typed": isinstance(e, RewriteUnavailable) and bool(history)}
     except OllamaError as e:
         yield "error", {"stage": stage, "error": f"The model returned an error: {e.message}",
                         "trace": trace.as_list()}

@@ -33,8 +33,9 @@ const SETTING_WORDS: Record<string, (v: unknown) => string> = {
  */
 export function StoreLab() {
   const { data: indexes } = useSWR<IndexesResponse>("/indexes");
-  const [profile, setProfile] = useState("baseline");
-  const { data, error, isLoading, mutate } = useSWR<StoreFacts>(`/learn/store?profile=${encodeURIComponent(profile)}`, {
+  const [pickedProfile, setProfile] = useState<string | null>(null);
+  const profile = pickedProfile ?? indexes?.default_profile ?? "";
+  const { data, error, isLoading, mutate } = useSWR<StoreFacts>(profile ? `/learn/store?profile=${encodeURIComponent(profile)}` : null, {
     keepPreviousData: true,
   });
   const built = (indexes?.profiles ?? []).filter((p) => p.active);

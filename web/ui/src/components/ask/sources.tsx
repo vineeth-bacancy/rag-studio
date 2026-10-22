@@ -27,8 +27,11 @@ export function Sources({
   docs,
   onOpen,
   promptVersion,
+  contextModel,
 }: {
   sources: Source[];
+  /** The model that wrote the passages' context lines, when the index has them. */
+  contextModel?: string;
   /** The prompt the model got: v3 and later fence passages off as data. */
   promptVersion?: string;
   /** null while the answer is still being written: not known yet. */
@@ -50,6 +53,7 @@ export function Sources({
             docs={docs}
             onOpen={onOpen}
             fenced={promptVersion === "v3" || promptVersion === "v4"}
+            contextModel={contextModel}
           />
         ))}
       </ol>
@@ -63,7 +67,9 @@ function SourceRow({
   docs,
   onOpen,
   fenced,
+  contextModel,
 }: {
+  contextModel?: string;
   source: Source;
   fenced: boolean;
   cited: boolean | null;
@@ -125,6 +131,11 @@ function SourceRow({
                   ? "The prompt told the model that passages are data, never instructions."
                   : "This prompt version does not fence passages off; prompt v3 does."}
               </span>
+            </p>
+          )}
+          {s.context && (
+            <p className="text-[11px] leading-relaxed text-muted-foreground italic" title="One or two sentences written for this passage and embedded with it, so search can find it. The answer model did not see it.">
+              <span className="font-medium not-italic">Context line (written by {contextModel ?? "Remote AI"}):</span> {s.context}
             </p>
           )}
           {open && s.label && (

@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { PageHeader } from "@/components/common/page-header";
 import { CardSkeleton, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
+import { ContextLines } from "@/components/indexes/context-lines";
 import { BuildProgress, IndexCard, where } from "@/components/indexes/index-card";
 import { api, ApiError, type IndexProfileRow, type IndexesResponse } from "@/lib/api";
 import { dateTimeLabel, NO_DATA, num } from "@/lib/format";
@@ -121,8 +122,11 @@ export default function IndexesPage() {
     );
   }
 
-  const row5 = (data?.profiles ?? []).filter((p) => MODELS.some((m) => m.model === p.embedding?.model));
-  const earlier = (data?.profiles ?? []).filter((p) => !row5.includes(p));
+  // A `-ctx` index shares its model and parser with a row-5 card, so it is kept out of that grid and
+  // shown with its context lines (QA M5-05: it was found by neither list and never drawn).
+  const contextual = (data?.profiles ?? []).filter((p) => p.contextual);
+  const row5 = (data?.profiles ?? []).filter((p) => !p.contextual && MODELS.some((m) => m.model === p.embedding?.model));
+  const earlier = (data?.profiles ?? []).filter((p) => !p.contextual && !row5.includes(p));
   const active = data?.active_build ?? null;
   const activeHere = active && active.status === "running" && !row5.some((p) => p.id === active.profile) ? active : null;
 
@@ -203,6 +207,37 @@ export default function IndexesPage() {
               );
             })}
           </section>
+
+          {contextual.length > 0 && (
+            <section aria-labelledby="row7" className="space-y-4">
+              <div className="space-y-1">
+                <h2 id="row7" className="text-lg font-semibold tracking-tight">Context lines</h2>
+                <p className="max-w-prose text-sm text-pretty text-muted-foreground">
+                  Ladder row 7: the EmbeddingGemma 2 indexes again, with one or two sentences written by Remote AI
+                  placed in front of each passage before it is embedded, saying what the passage alone does not. The
+                  answer model never sees them.
+                </p>
+              </div>
+              <Card className="@container">
+                <CardContent className="grid gap-4 @2xl:grid-cols-2">
+                  {contextual.map((p) => (
+                    <div key={p.id} className="flex min-w-0 flex-col gap-3">
+                      <IndexCard
+                        profile={p}
+                        title={PARSERS.find((x) => x.parser === p.parser)?.title ?? p.label}
+                        buildActive={Boolean(active) && active?.profile !== p.id}
+                        checking={checking === p.id}
+                        onBuild={(on) => void build(p, on)}
+                        onCancel={() => void cancel(p)}
+                        onCheck={() => void check(p)}
+                      />
+                      <ContextLines profile={p.id} onChanged={() => void mutate()} />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </section>
+          )}
 
           <Card className="@container">
             <CardHeader>

@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 from rag_studio import health, profiles
+from rag_studio import rerank as reranking
+from rag_studio.prompt import DEFAULT_VERSION
+from rag_studio.retrieve import SearchSpec
 
 MARK = {"healthy": "ok", "running": "ok", "info": "--", "warning": "!!",
         "needs_attention": "XX", "unavailable": "XX"}
@@ -117,11 +120,20 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 0
 
     sets = ev.load_sets()
-    chosen = [f"set-{s}" if not s.startswith("set-") else s for s in args.set] or list(sets)
+    # No --set means every set that runs on this computer: a remote-only set (E: follow-ups) needs
+    # Remote AI to rewrite its questions, so it is named on purpose.
+    chosen = [f"set-{s}" if not s.startswith("set-") else s for s in args.set] or [
+        sid for sid, s in sets.items() if not s.get("remote_only")]
     ladder = {"row": args.ladder, "label": args.label or f"Row {args.ladder}"} if args.ladder else None
+    try:
+        search = SearchSpec(args.search, args.cap, rerank=args.rerank, rerank_depth=args.rerank_depth,
+                            rewrite=args.rewrite, agent_rounds=args.agent)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     spec = ev.RunSpec(sets=chosen, mode=args.mode, k=args.k, model=args.model,
                       profile=args.profile, prompt_version=args.prompt, label=args.label, ladder=ladder,
-                      search={"method": args.search, "section_cap": args.cap})
+                      search=search.as_args(), rerank_cache=not args.fresh_rerank, as_typed=args.as_typed)
 
     def on_result(run: dict, res: dict) -> None:
         done, total = run["progress"]["done"], run["progress"]["total"]
@@ -147,6 +159,11 @@ def cmd_eval(args: argparse.Namespace) -> int:
     for sid, r in s["recall"].items():
         if r["total"]:
             print(f"{sid}: recall@{args.k} {r['hits']}/{r['total']}")
+    if s.get("rewrite"):
+        print(f"Follow-ups rewritten right: {s['rewrite']['ok']}/{s['rewrite']['total']}")
+    rk = s["ranking"]
+    if rk["n"]:
+        print(f"MRR {rk['mrr']:.3f} | recall@20 {rk['recall20']}/{rk['n']}")
     if s["outcomes"]:
         o = s["outcomes"]
         model = run["config"]["answer"]["model"]
@@ -186,7 +203,10 @@ def _print_remote(info: dict | None) -> None:
     if not info.get("reachable"):
         print(f"  Not reachable: {info.get('error')}")
         return
-    print(f"  Ollama {info['ollama_version']} · {info['latency_ms']} ms")
+    if info.get("ollama_version"):
+        print(f"  Ollama {info['ollama_version']} · {info['latency_ms']} ms")
+    else:
+        print("  Ollama not running here (a rerank-only runtime)")
     gpus = (info.get("gpu") or {}).get("gpus") or []
     for g in gpus:
         print(f"  GPU    {g['name']} · {g['memory_used_mb']:,} / {g['memory_total_mb']:,} MB in use")
@@ -196,6 +216,11 @@ def _print_remote(info: dict | None) -> None:
         loaded = next((x for x in info.get("loaded", []) if x["name"] == m["name"]), None)
         where = ("on the GPU" if loaded["on_gpu"] else "on the CPU") if loaded else "not loaded"
         print(f"  Model  {m['name']:<26} {(m['digest'] or '-')[:12]}  {m.get('quantization') or '-':<7} {where}")
+    w = info.get("worker")
+    if w:
+        peak = (w.get("vram") or {}).get("peak_mb")
+        print(f"  Worker serves {', '.join(w.get('served') or []) or 'nothing'} · loaded {w.get('loaded') or '-'}"
+              + (f" · peak {peak:,} MB" if peak else ""))
     if info.get("missing"):
         print(f"  Missing for the Colab indexes: {', '.join(info['missing'])}")
 
@@ -216,8 +241,10 @@ def cmd_llm(args: argparse.Namespace) -> int:
         except OllamaUnavailable:
             version = None
         try:
-            cell = colab.build_cell(models=args.models or colab.DEFAULT_MODELS, token=token,
-                                    ollama_version=version)
+            # --worker alone is a rerank-only runtime: no Ollama models, so no Ollama.
+            models = args.models if args.models is not None else (() if args.worker else colab.DEFAULT_MODELS)
+            cell = colab.build_cell(models=models, token=token, ollama_version=version,
+                                    worker=args.worker or ())
         except (ValueError, colab.MissingPayload) as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
@@ -259,6 +286,10 @@ def cmd_llm(args: argparse.Namespace) -> int:
         if result["ok"]:
             for r in result["embedded"]:
                 print(f"  {r['model']:<26} embedded a test sentence: {r['dimensions']} dimensions, {r['seconds']} s")
+            for r in result.get("chatted") or []:
+                print(f"  {r['model']:<26} answered a one-token chat, {r['seconds']} s")
+            if result.get("worker"):
+                print(f"  worker                     serves {', '.join(result['worker']['served'] or [])}")
             _print_remote(result.get("remote"))
             if result["missing"]:
                 print(f"Warning: the runtime does not serve {', '.join(result['missing'])}, which the Colab "
@@ -269,6 +300,24 @@ def cmd_llm(args: argparse.Namespace) -> int:
               file=sys.stderr)
         print("Fix the runtime (or re-run the cell), then: ./rag llm test", file=sys.stderr)
         return 1
+
+    if args.action == "keepalive":
+        try:
+            cell = colab.build_keepalive_cell(args.interval)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        if args.copy:
+            if not _clipboard_write(cell):
+                print("Error: no clipboard tool found (xclip, xsel or wl-copy). Run without --copy.", file=sys.stderr)
+                return 1
+            print("Copied the keep-alive cell to the clipboard.")
+        else:
+            print(cell)
+        print("In Colab: paste it into a NEW cell of the same notebook and run it. It keeps a cell running and "
+              f"touches the GPU every {args.interval} s. Stop it with the cell's stop button; the runtime keeps running.",
+              file=sys.stderr)
+        return 0
 
     if args.action == "status":
         conn = remote.connection()
@@ -290,6 +339,10 @@ def cmd_llm(args: argparse.Namespace) -> int:
         if result["ok"]:
             for r in result["embedded"]:
                 print(f"  {r['model']:<26} {r['dimensions']} dimensions, {r['seconds']} s")
+            for r in result.get("chatted") or []:
+                print(f"  {r['model']:<26} one-token chat, {r['seconds']} s")
+            if result.get("worker"):
+                print(f"  worker                     serves {', '.join(result['worker']['served'] or [])}")
             print(f"Remote AI works ({result['seconds']} s).")
             return 0
         print(f"Error: the test failed at the {result['stage']} step: {result['error']}", file=sys.stderr)
@@ -301,6 +354,92 @@ def cmd_llm(args: argparse.Namespace) -> int:
         print("Disconnected. Everything runs on this computer." if was else "Remote AI was not connected.")
         if args.forget_token:
             print("The remembered token is gone: the next setup cell will carry a new one.")
+        return 0
+    return 2
+
+
+# --------------------------------------------------------------------------- ./rag context
+
+def cmd_context(args: argparse.Namespace) -> int:
+    from rag_studio import context, remote
+    profile = profiles.get(args.profile_id)
+    if not profile.contextual:
+        print(f"Error: {profile.label} has no context lines. Pick a -ctx profile.", file=sys.stderr)
+        return 1
+    try:
+        if args.action == "status":
+            s = context.progress_for(profile)
+            print(f"{profile.label}: {s['written']:,} of {s['passages']:,} passages have a context line "
+                  f"({s['blocks']} windows); model digest {s['digest'] or '-'}")
+            job = context.last_job(profile.id)
+            if job:
+                print(f"  last job: {job['status']} at {job.get('finished_at') or job['started_at']}")
+            return 0
+        if args.action == "export":
+            r = context.export(profile)
+            print(f"Wrote {r['lines']:,} lines to {r['path']}")
+            return 0
+        if args.action == "import":
+            print(f"Loaded {context.import_export(profile.id):,} lines into the cache.")
+            return 0
+        client = remote.client()
+        info = remote.worker_info(client)
+        if not info or not info.get("context"):
+            print("Error: the connected runtime is not running the context job. Run the setup cell with "
+                  "`./rag llm colab --worker context --copy`, then connect.", file=sys.stderr)
+            return 1
+        if args.action == "check":
+            r = context.determinism_check(profile, client=client, n=args.n)
+            print(f"{r['identical']} of {r['checked']} regenerated lines were word for word identical "
+                  f"({r['exact_match_rate']:.0%}), in a shuffled order and without the runtime's memory.")
+            for d in r["examples_of_difference"]:
+                print(f"  {d['chunk_id']}\n    before: {d['before']}\n    after:  {d['after']}")
+            return 0
+        if args.action == "write":
+            def say(stage: str, i: dict) -> None:
+                if stage == "context":
+                    print(f"\r  {i['done']:,} / {i['total']:,} lines", end="", flush=True)
+            r = context.write_lines(profile, client=client, say=say, limit=args.limit)
+            print()
+            print(f"Wrote {r['lines']:,} lines in {r['requests']} requests, {r['seconds']} s "
+                  f"({r['lines_per_s']} lines/s); {r['retried']} batches needed a second request.")
+            if r["first_in_block_ms"] and r["later_in_block_ms"]:
+                print(f"  first passage of a window {r['first_in_block_ms']:.0f} ms, the rest "
+                      f"{r['later_in_block_ms']:.0f} ms (the window's start is reused)")
+            net = r.get("network") or {}
+            if net.get("calls"):
+                print(f"  network: sent {net['bytes_out_raw']/1e6:.2f} MB as {net['bytes_out_wire']/1e6:.2f} MB, "
+                      f"{net['network_ms']/1000:.0f} s on the tunnel, {net['server_ms']/1000:.0f} s on the runtime")
+            if args.limit is None:
+                e = context.export(profile)
+                print(f"Exported {e['lines']:,} lines to {e['path']}")
+            return 0
+    except (context.ContextMissing, context.ContextBusy, context.ContextCancelled, remote.RemoteNotConnected) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    return 2
+
+
+# --------------------------------------------------------------------------- ./rag rerank
+
+def cmd_rerank(args: argparse.Namespace) -> int:
+    from rag_studio import rerank
+    spec = rerank.RERANKERS["qwen3-0.6b"]
+    if args.action == "download":
+        if rerank.snapshot(spec):
+            print(f"{spec.model} is already downloaded.")
+            return 0
+        print(f"Downloading {spec.model} (about 1.2 GB) ...")
+        print(rerank.download(spec))
+        return 0
+    if args.action == "bench":
+        from rag_studio import ingest, rerank_bench
+        free = ingest.available_ram_gb()
+        if free is not None and free < 5.5:
+            print(f"Error: the benchmark holds both models (about 5 GB) and only {free:.1f} GB is free. "
+                  "Close some apps and run it again.", file=sys.stderr)
+            return 1
+        rerank_bench.bench(args.profile)
         return 0
     return 2
 
@@ -391,8 +530,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_health)
 
     p = sub.add_parser("ingest", help="parse, chunk and embed the PDFs into an index")
-    p.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES),
-                   help="which index profile to build (default: %(default)s)")
+    p.add_argument("--profile", default=profiles.BASELINE.id, choices=sorted(profiles.PROFILES),
+                   help="which index profile to build (default: %(default)s, the quick one; the app's default "
+                        f"index is {profiles.DEFAULT}: build it with ./rag index build {profiles.DEFAULT})")
     p.add_argument("--force", action="store_true", help="rebuild even if nothing changed")
     p.add_argument("--on", choices=("local", "colab"), default="local",
                    help="embed on this computer or on the connected Colab runtime (default: %(default)s)")
@@ -406,11 +546,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="carry no token: the runtime makes its own and hands it back in a connect code")
     q.add_argument("--new-token", action="store_true", help="make a new remembered token for this cell")
     q.add_argument("--models", nargs="+", metavar="TAG",
-                   help=f"models the runtime serves (default: {' '.join(('qwen3-embedding:8b', 'qwen3-embedding:0.6b'))})")
+                   help=f"models the runtime serves (default: {' '.join(('qwen3-embedding:8b', 'qwen3-embedding:0.6b'))}; "
+                        "none when only --worker is given)")
+    q.add_argument("--worker", nargs="+", metavar="ID",
+                   help="rerankers the GPU worker downloads and serves, e.g. qwen3-0.6b-gpu qwen3-4b "
+                        "(the first is loaded; the others swap in when asked)")
     q = llm.add_parser("connect", help="connect to a runtime with its connect code (or URL)")
     q.add_argument("target", nargs="?", help="the connect code or URL (default: read the clipboard)")
     q.add_argument("--token", help="the token, with a bare URL whose token this computer does not remember")
     q.add_argument("--no-paste", action="store_true", help="never read the clipboard")
+    q = llm.add_parser("keepalive", help="a cell that keeps a running Colab runtime from being reclaimed for idling")
+    q.add_argument("--copy", action="store_true", help="copy it to the clipboard instead of printing it")
+    q.add_argument("--interval", type=int, default=240, help="seconds between GPU touches (default: %(default)s)")
     llm.add_parser("status", help="what is connected, its GPU and models; no inference")
     llm.add_parser("test", help="a real request: embed one sentence with each model")
     q = llm.add_parser("disconnect", help="back to this computer only")
@@ -431,6 +578,28 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("model", help="the Hugging Face name, e.g. google/embeddinggemma-2")
     p.set_defaults(func=cmd_index)
 
+    p = sub.add_parser("context", help="context lines: write them on Remote AI, then build the -ctx index")
+    cx = p.add_subparsers(dest="action", required=True)
+    for name, text in (("status", "how many passages have a line"), ("write", "write the missing lines on Remote AI"),
+                       ("check", "regenerate some lines and report how many match word for word"),
+                       ("export", "write the lines to data/context/<profile>.jsonl"),
+                       ("import", "load an exported file back into the cache")):
+        q = cx.add_parser(name, help=text)
+        q.add_argument("profile_id", choices=sorted(i for i, pr in profiles.PROFILES.items() if pr.contextual),
+                       metavar="PROFILE")
+        if name == "check":
+            q.add_argument("-n", type=int, default=20, help="lines to regenerate (default: %(default)s)")
+        if name == "write":
+            q.add_argument("--limit", type=int, help="write at most this many lines (a trial run)")
+    p.set_defaults(func=cmd_context)
+
+    p = sub.add_parser("rerank", help="the local reranker: download it, or measure dtype and batch size")
+    rr = p.add_subparsers(dest="action", required=True)
+    rr.add_parser("download", help="download Qwen3-Reranker-0.6B at its pinned revision (about 1.2 GB)")
+    q = rr.add_parser("bench", help="time fp32, bf16 and int8 on real passages, beside EmbeddingGemma 2")
+    q.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES))
+    p.set_defaults(func=cmd_rerank)
+
     p = sub.add_parser("eval", help="ask the test questions and score the answers")
     p.add_argument("--set", nargs="*", default=[], metavar="ID",
                    help="test-question sets, e.g. a b (default: all)")
@@ -438,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="answer: the full scorecard; retrieval: search only, no model (default: %(default)s)")
     p.add_argument("--model", help="answer model (default: the Answer role's model)")
     p.add_argument("--k", type=int, default=5, help="passages per answer (default: %(default)s)")
-    p.add_argument("--prompt", default="v2", help="system prompt version (default: %(default)s)")
+    p.add_argument("--prompt", default=DEFAULT_VERSION, help="system prompt version (default: %(default)s)")
     p.add_argument("--profile", default=profiles.DEFAULT, choices=sorted(profiles.PROFILES),
                    help="which index to search (default: %(default)s)")
     p.add_argument("--search", choices=("dense", "bm25", "hybrid"), default="dense",
@@ -446,6 +615,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cap", type=int, metavar="N",
                    help="at most N passages per section ahead of the rest; contents pages and "
                         "reference lists at most 1 (default: no cap)")
+    p.add_argument("--rerank", choices=sorted(reranking.RERANKERS), metavar="ID",
+                   help="re-order the top passages with a reranker: " + ", ".join(sorted(reranking.RERANKERS))
+                        + " (default: off)")
+    p.add_argument("--rewrite", choices=("decompose", "multi", "hyde"),
+                   help="rewrite each question on Remote AI first: split into parts (decompose), several phrasings "
+                        "(multi) or a drafted answer to search with (hyde)")
+    p.add_argument("--agent", type=int, metavar="ROUNDS", help="multi-step search with at most this many rounds (2-6)")
+    p.add_argument("--as-typed", action="store_true",
+                   help="follow-up questions (Set E) are searched as typed, without the Remote AI rewrite")
+    p.add_argument("--fresh-rerank", action="store_true",
+                   help="score again instead of replaying remembered reranker scores (for timing)")
+    p.add_argument("--rerank-depth", type=int, default=reranking.DEFAULT_DEPTH, metavar="N",
+                   help="how many passages the reranker reads (default: %(default)s)")
     p.add_argument("--label", help="a name for this run (with --ladder: the row's variant name)")
     p.add_argument("--ladder", type=int, metavar="ROW", help="record this run as a ladder row")
     p.add_argument("--tag", metavar="RUN_ID", help="with --ladder: record a finished run as a ladder row")

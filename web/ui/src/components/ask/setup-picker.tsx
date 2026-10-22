@@ -3,23 +3,30 @@ import useSWR from "swr";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import type { IndexesResponse, PromptVersion, SearchMethod } from "@/lib/api";
-import { SEARCH_LABELS, SECTION_CAP } from "@/lib/search";
+import type { IndexesResponse, PromptVersion, RerankersResponse, SearchMethod } from "@/lib/api";
+import { REWRITE_EXPLAIN, REWRITE_LABELS, SEARCH_LABELS, SECTION_CAP } from "@/lib/search";
 import { useAsk } from "./ask-store";
 
 /**
  * Which index answers come from, how it is searched, and which prompt version
  * the model gets. Only indexes that can be asked now can be chosen (built,
- * and for a Colab index, the runtime connected); the others say why. BM25 and hybrid need the index's word index. The defaults stay
- * the baseline until the scorecard says otherwise.
+ * and for a Colab index, the runtime connected); the others say why. BM25 and hybrid need the index's word index. The defaults are the
+ * ones the API names (row 5d, prompt v3) until the scorecard says otherwise.
  */
 export function SetupPicker({ disabled }: { disabled?: boolean }) {
   const { data: indexes } = useSWR<IndexesResponse>("/indexes");
   const { data: prompts } = useSWR<{ default: string; versions: PromptVersion[] }>("/prompts");
-  const profile = useAsk((s) => s.profile);
-  const prompt = useAsk((s) => s.prompt);
+  const profile = useAsk((s) => s.profile) ?? indexes?.default_profile ?? "";
+  const prompt = useAsk((s) => s.prompt) ?? prompts?.default ?? "";
   const search = useAsk((s) => s.search);
   const sectionCap = useAsk((s) => s.sectionCap);
+  const rerank = useAsk((s) => s.rerank);
+  const setRerank = useAsk((s) => s.setRerank);
+  const rewrite = useAsk((s) => s.rewrite);
+  const setRewrite = useAsk((s) => s.setRewrite);
+  const agentRounds = useAsk((s) => s.agentRounds);
+  const setAgentRounds = useAsk((s) => s.setAgentRounds);
+  const { data: rerankers } = useSWR<RerankersResponse>("/rerankers");
   const setProfile = useAsk((s) => s.setProfile);
   const setPrompt = useAsk((s) => s.setPrompt);
   const setSearch = useAsk((s) => s.setSearch);
@@ -106,6 +113,82 @@ export function SetupPicker({ disabled }: { disabled?: boolean }) {
             disabled={disabled}
           />
           Limit per section
+        </label>
+        <label htmlFor="ask-rerank" className="sr-only">
+          Reranker
+        </label>
+        <Select
+          value={rerank ?? "off"}
+          items={{ off: "Reranker off", ...Object.fromEntries((rerankers?.rerankers ?? []).map((r) => [r.id, r.label])) }}
+          onValueChange={(v) => setRerank(!v || v === "off" ? null : (v as string))}
+          disabled={disabled}
+        >
+          <SelectTrigger
+            id="ask-rerank"
+            size="sm"
+            className="text-xs"
+            title={`A slower model reads each of the top ${rerankers?.depth ?? 20} passages with the question and reorders them`}
+          >
+            <SelectValue placeholder="Reranker" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Reranker off</SelectItem>
+            {(rerankers?.rerankers ?? []).map((r) => (
+              <SelectItem key={r.id} value={r.id} disabled={!r.can.ok}>
+                <span className="flex flex-col">
+                  <span>{r.label}</span>
+                  {!r.can.ok && <span className="text-[11px] text-muted-foreground">{r.can.reason}</span>}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <label htmlFor="ask-rewrite" className="sr-only">
+          Query rewriting
+        </label>
+        <Select
+          value={rewrite ?? "off"}
+          items={{ off: "Rewriting off", ...REWRITE_LABELS }}
+          onValueChange={(v) => setRewrite(!v || v === "off" ? null : (v as string))}
+          disabled={disabled}
+        >
+          <SelectTrigger
+            id="ask-rewrite"
+            size="sm"
+            className="text-xs"
+            title="Remote AI rewrites the question before searching, then the results are combined"
+          >
+            <SelectValue placeholder="Query rewriting" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Rewriting off</SelectItem>
+            {Object.entries(REWRITE_LABELS).map(([id, label]) => (
+              <SelectItem key={id} value={id} disabled={rerankers?.rewrite?.ok === false}>
+                <span className="flex flex-col">
+                  <span>{label}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {rerankers?.rewrite?.ok === false ? rerankers.rewrite.reason : REWRITE_EXPLAIN[id]}
+                  </span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <label
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground"
+          title={
+            rerankers?.rewrite?.ok === false
+              ? `${rerankers.rewrite.reason}`
+              : "Remote AI looks at what was found and decides whether to search again, up to 3 rounds"
+          }
+        >
+          <Switch
+            size="sm"
+            checked={agentRounds !== null}
+            onCheckedChange={(on) => setAgentRounds(on ? 3 : null)}
+            disabled={disabled || rerankers?.rewrite?.ok === false}
+          />
+          Multi-step search
         </label>
         <label htmlFor="ask-prompt" className="sr-only">
           Prompt version

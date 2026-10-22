@@ -32,6 +32,8 @@ case "$cmd" in
     index)   exec "$PY" -m rag_studio.cli index "$@" ;;
     eval)    exec "$PY" -m rag_studio.cli eval "$@" ;;
     llm)     exec "$PY" -m rag_studio.cli llm "$@" ;;
+    rerank)  exec "$PY" -m rag_studio.cli rerank "$@" ;;
+    context) exec "$PY" -m rag_studio.cli context "$@" ;;
 
     test)
         if ! "$PY" -c "import pytest" 2>/dev/null; then
@@ -51,6 +53,8 @@ RAG Studio - cited answers from your PDF reports, and how RAG works
   ./rag ingest         parse, chunk and index the documents
   ./rag index          list, build and check index profiles (list, build, check, download)
   ./rag llm            connect a Colab GPU (colab, connect, status, test, disconnect)
+  ./rag context        write context lines on Remote AI (status, write, check, export, import)
+  ./rag rerank         download the reranker, or measure it (download, bench)
   ./rag eval           ask the test questions and score the answers
   ./rag test           run the test suite
 EOF

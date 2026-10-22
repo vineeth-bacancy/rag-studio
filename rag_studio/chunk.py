@@ -93,11 +93,17 @@ class Passage:
     char_end: int
     label: str | None = None                 # the section label, when the chunker adds one
     meta: dict[str, Any] = field(default_factory=dict)   # section_path, kind, type (structure chunkers)
+    context: str | None = None               # a line that places the passage in its document (M5)
 
     @property
     def embed_text(self) -> str:
-        """Exactly what is embedded, indexed for BM25 and shown to the model."""
-        return f"{self.label}\n{self.text}" if self.label else self.text
+        """Exactly what is embedded and indexed for BM25: the section label, the
+        context line (when the profile has them), then the passage. The answer
+        model is shown the passage (`text`) with its source, **not** this: the
+        context line only helps search find the passage (row 7 is a
+        retrieval-only change)."""
+        parts = [x for x in (self.label, self.context) if x]
+        return "\n".join([*parts, self.text])
 
 
 def section_label(title: str | None, path: Sequence[str] | None, kind: str = "body") -> str:

@@ -57,7 +57,7 @@ RULE_4_V4 = ("4. Each passage starts with its document and section. Name a secti
              "summary only if that passage's Section line names it.")
 assert RULE_4_V2 in SYSTEM_PROMPTS["v3"]
 SYSTEM_PROMPTS["v4"] = SYSTEM_PROMPTS["v3"].replace(RULE_4_V2, RULE_4_V4)
-DEFAULT_VERSION = "v2"
+DEFAULT_VERSION = "v3"
 
 # How each version lays out the user message.
 _FENCED = {"v3", "v4"}

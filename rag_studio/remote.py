@@ -32,6 +32,7 @@ import json
 import os
 import secrets
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -250,13 +251,40 @@ def connected() -> bool:
     return bool(load_state())
 
 
+_clients: dict[tuple[str, str], OllamaClient] = {}
+_clients_lock = threading.Lock()
+
+
 def client() -> OllamaClient:
-    """A client for the connected runtime, or RemoteNotConnected."""
+    """A client for the connected runtime, or RemoteNotConnected. One kept-alive
+    client per (url, token): every request through a tunnel otherwise opens a
+    new TLS connection. Closed on connect and disconnect."""
     state = load_state()
     if not state:
         raise RemoteNotConnected("No Colab runtime is connected. Connect one in Settings > Model backend, "
                                  "or run: ./rag llm connect")
-    return OllamaClient(state["url"], token=state.get("token"), remote=True)
+    key = (state["url"], state.get("token") or "")
+    with _clients_lock:
+        if key not in _clients:
+            _clients[key] = OllamaClient(state["url"], token=state.get("token"), remote=True)
+        return _clients[key]
+
+
+def close_clients() -> None:
+    with _clients_lock:
+        for c in _clients.values():
+            c.close()
+        _clients.clear()
+
+
+def worker_info(c: OllamaClient | None = None) -> dict[str, Any] | None:
+    """The runtime's worker (`GET /worker`): loaded model, VRAM, package
+    versions. None when no worker is running, or the gateway is too old to
+    forward to one."""
+    try:
+        return (c or client()).get_json("/worker")
+    except (RemoteNotConnected, OllamaUnavailable, OllamaError):
+        return None
 
 
 def needed_models() -> list[str]:
@@ -264,6 +292,17 @@ def needed_models() -> list[str]:
     from rag_studio import profiles
     return sorted({p.embedding.model for p in profiles.PROFILES.values()
                    if p.embedding.backend == "ollama" and "colab" in (p.embedding.build_on, p.embedding.query_on)})
+
+
+def needed_by_purpose() -> dict[str, list[str]]:
+    """What a runtime needs, by what it is for, so a rerank-only runtime is not
+    told it lacks embedding models: `indexes` (Ollama models for indexes that
+    embed on Colab), `roles` (Ollama models for remote roles, M5 P3+) and
+    `worker` (reranker ids; the worker serves these)."""
+    from rag_studio import config, rerank
+    return {"indexes": needed_models(),
+            "roles": sorted({r.model for r in config.ROLES if getattr(r, "where", "local") == "remote" and r.model}),
+            "worker": sorted(s.id for s in rerank.RERANKERS.values() if s.where == "colab")}
 
 
 def connection() -> dict[str, Any]:
@@ -277,6 +316,7 @@ def connection() -> dict[str, Any]:
         "code_prefix": CODE_PREFIX,
         "needed_models": needed_models(),
         "fallback": "strict",
+        "rerankers": [],
     }
     if state:
         out.update({
@@ -286,6 +326,7 @@ def connection() -> dict[str, Any]:
             "connected_at": state.get("connected_at"), "last_ok_at": state.get("last_ok_at"),
             "last_error": state.get("last_error"), "last_error_at": state.get("last_error_at"),
             "last_error_kind": state.get("last_error_kind"),
+            "rerankers": state.get("rerankers") or [],
         })
     return out
 
@@ -315,13 +356,20 @@ def probe(c: OllamaClient | None = None) -> dict[str, Any]:
         except RemoteNotConnected as e:
             return {"reachable": False, "error": str(e), "error_kind": "not_connected"}
     t = time.perf_counter()
+    version, installed, resident, ollama_error = None, [], [], None
     try:
         version = c.version()
         latency_ms = round((time.perf_counter() - t) * 1000)
         installed = c.installed()
         resident = c.resident()
     except (OllamaUnavailable, OllamaError) as e:
-        return {"reachable": False, "error": _message(e), "error_kind": _kind(e)}
+        ollama_error = e
+        latency_ms = None
+    # A runtime may serve only a worker (a rerank-only session starts no
+    # Ollama). It is reachable if either answers; it is not if neither does.
+    worker = worker_info(c)
+    if ollama_error is not None and worker is None:
+        return {"reachable": False, "error": _message(ollama_error), "error_kind": _kind(ollama_error)}
     try:
         gpu = c.gpu()
     except (OllamaUnavailable, OllamaError):
@@ -330,8 +378,8 @@ def probe(c: OllamaClient | None = None) -> dict[str, Any]:
                "on_gpu": m.size_vram > 0, "fully_on_gpu": m.size > 0 and m.size_vram >= m.size}
               for m in resident]
     have = [m.name for m in installed]
-    missing = [m for m in needed_models() if not any(same_model(m, h) for h in have)]
-    return {"reachable": True, "latency_ms": latency_ms, "ollama_version": version,
+    missing = [m for m in needed_models() if have and not any(same_model(m, h) for h in have)]
+    return {"reachable": True, "worker": worker, "latency_ms": latency_ms, "ollama_version": version,
             "models": [{"name": m.name, "digest": m.digest, "size": m.size,
                         "quantization": m.quantization, "capabilities": list(m.capabilities)}
                        for m in installed],
@@ -339,35 +387,54 @@ def probe(c: OllamaClient | None = None) -> dict[str, Any]:
 
 
 def smoke_test(c: OllamaClient | None = None) -> dict[str, Any]:
-    """A real request, not a reachability check: embed one sentence with each
-    embedding model the runtime serves, and report dimensions and time. The
-    outcome is recorded in the state file for `status`."""
+    """A real request, not a reachability check, for whatever the runtime
+    serves: an embedding model embeds one sentence, a chat model answers a
+    one-token chat, a running worker reports itself. A runtime that serves
+    nothing fails. The outcome is recorded in the state file for `status`."""
     started = time.perf_counter()
     stage = "connect"
+    results: list[dict[str, Any]] = []
+    chatted: list[dict[str, Any]] = []
+    worker = None
     try:
         c = c or client()
         stage = "list"
-        installed = c.installed()
-        embedders = [m for m in installed if "embedding" in m.capabilities]
-        if not embedders:
-            raise OllamaError(404, "the runtime serves no embedding model")
+        try:
+            installed = c.installed()
+        except OllamaUnavailable as e:
+            if e.kind in ("auth", "timeout") or "not answering" in e.reason:
+                raise
+            installed = []                       # no Ollama here: a worker-only runtime
+        except OllamaError:
+            installed = []
         stage = "embed"
-        results = []
-        for m in embedders:
+        for m in (x for x in installed if "embedding" in x.capabilities):
             t = time.perf_counter()
             vec = c.embed(m.name, ["RAG Studio connection test."])[0]
             results.append({"model": m.name, "digest": m.digest, "dimensions": len(vec),
                             "seconds": round(time.perf_counter() - t, 2)})
+        stage = "chat"
+        for m in (x for x in installed if "embedding" not in x.capabilities):
+            t = time.perf_counter()
+            c.post_json("/api/chat", {"model": m.name, "think": False, "stream": False,
+                                      "messages": [{"role": "user", "content": "hi"}],
+                                      "options": {"num_predict": 1}})
+            chatted.append({"model": m.name, "seconds": round(time.perf_counter() - t, 2)})
+        stage = "worker"
+        worker = worker_info(c)
+        if not results and not chatted and worker is None:
+            raise OllamaError(404, "the runtime serves no model and runs no worker")
     except RemoteNotConnected as e:
         return {"ok": False, "stage": stage, "error": str(e), "error_kind": "not_connected",
-                "seconds": None, "embedded": []}
+                "seconds": None, "embedded": [], "chatted": [], "worker": None}
     except (OllamaUnavailable, OllamaError) as e:
         record_result(ok=False, error=_message(e), kind=_kind(e))
         return {"ok": False, "stage": stage, "error": _message(e), "error_kind": _kind(e),
-                "seconds": round(time.perf_counter() - started, 2), "embedded": []}
+                "seconds": round(time.perf_counter() - started, 2), "embedded": [], "chatted": [], "worker": None}
     record_result(ok=True)
     return {"ok": True, "stage": "done", "error": None, "error_kind": None,
-            "seconds": round(time.perf_counter() - started, 2), "embedded": results}
+            "seconds": round(time.perf_counter() - started, 2), "embedded": results, "chatted": chatted,
+            "worker": {"loaded": worker.get("loaded"), "served": worker.get("served")} if worker else None}
 
 
 def connect(*, code: str = "", url: str = "", token: str = "") -> dict[str, Any]:
@@ -398,6 +465,7 @@ def connect(*, code: str = "", url: str = "", token: str = "") -> dict[str, Any]
     if not (TOKEN_CHARS[0] <= len(token) <= TOKEN_CHARS[1]) or not token.isprintable() or " " in token:
         raise ValueError("That token is not one a runtime makes. Paste the whole connect code again.")
 
+    close_clients()          # a new runtime gets new connections
     save_state({"url": url, "token": token, "models": models, "gateway": gateway or None,
                 "connected_at": _now(),
                 "note": "Written by RAG Studio (./rag llm connect or Settings). A Colab tunnel dies "
@@ -408,10 +476,12 @@ def connect(*, code: str = "", url: str = "", token: str = "") -> dict[str, Any]
     info = probe() if result["ok"] else None
     served = [m["name"] for m in (info or {}).get("models", [])] or models
     if info:
-        # What the runtime really serves, for the Indexes page (no probe there).
+        # What the runtime really serves, for the Indexes page and the
+        # reranker picker (no probe there).
         state = load_state()
         if state:
             state["models"] = served
+            state["rerankers"] = (info.get("worker") or {}).get("served") or []
             save_state(state)
     missing = [m for m in needed_models() if served and not any(same_model(m, s) for s in served)]
     return {**result, "missing": missing, "remote": info}
@@ -422,5 +492,6 @@ def disconnect(*, forget: bool = False) -> None:
     with no runtime connected, everything runs locally. `forget` also drops
     the remembered token, so the next cell must carry a new one."""
     clear_state()
+    close_clients()
     if forget:
         forget_token()

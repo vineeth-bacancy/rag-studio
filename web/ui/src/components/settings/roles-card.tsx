@@ -29,9 +29,16 @@ export function RolesCard({ roles }: { roles: RoleRow[] }) {
                 <p className="text-sm font-medium">{r.label}</p>
                 <p className="text-xs text-pretty text-muted-foreground">{r.purpose}</p>
               </div>
-              <p className="font-mono text-xs break-all sm:pt-0.5">
-                {r.model ?? <span className="font-sans text-muted-foreground">Not set yet</span>}
-              </p>
+              <div className="space-y-0.5 sm:pt-0.5">
+                <p className="font-mono text-xs break-all">
+                  {r.model ?? <span className="font-sans text-muted-foreground">Not set yet</span>}
+                </p>
+                {r.model != null && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {r.where === "remote" ? "Remote AI only" : r.runs_on === "python" ? "Local AI, in this app" : "Local AI"}
+                  </p>
+                )}
+              </div>
               <div className="sm:text-right">
                 <RoleStatus role={r} />
               </div>
@@ -51,7 +58,15 @@ function RoleStatus({ role }: { role: RoleRow }) {
       </Badge>
     );
   }
+  if (role.where === "remote") {
+    // Runs on the Colab runtime only, with no local fallback: never "Not installed" here.
+    if (!role.connected) return <StatusBadge status="info" label="Needs Remote AI" />;
+    if (role.installed == null) return <StatusBadge status="unavailable" label="Unknown" />;
+    if (!role.installed) return <StatusBadge status="needs_attention" label="Not on the runtime" />;
+    return <StatusBadge status="healthy" label="On Remote AI" />;
+  }
   if (role.installed == null) return <StatusBadge status="unavailable" label="Unknown" />;
-  if (!role.installed) return <StatusBadge status="needs_attention" label="Not installed" />;
-  return <StatusBadge status="healthy" label={role.loaded ? "Loaded" : "Installed"} />;
+  const has = role.runs_on === "python" ? "Downloaded" : "Installed";
+  if (!role.installed) return <StatusBadge status="needs_attention" label={role.runs_on === "python" ? "Not downloaded" : "Not installed"} />;
+  return <StatusBadge status="healthy" label={role.loaded ? "Loaded" : has} />;
 }

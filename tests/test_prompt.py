@@ -23,7 +23,7 @@ V2_SHA256 = "d30ea3a10dfbdebb6fdcb8bde0fea60f4e97afd3a0d1c83c19294f8d4b997c56"
 
 def test_messages_use_the_baseline_layout():
     msgs = prompt.build_messages("Q?", [{"chunk_id": "d:p5:c0", "text": "alpha"},
-                                         {"chunk_id": "d:p6:c1", "text": "beta"}])
+                                         {"chunk_id": "d:p6:c1", "text": "beta"}], version="v2")
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     assert msgs[1]["content"] == "Context:\n[1] d:p5:c0\nalpha\n\n[2] d:p6:c1\nbeta\n\nQuestion: Q?"
 
