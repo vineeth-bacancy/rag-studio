@@ -10,6 +10,7 @@ import { CleanLab } from "@/components/learn/clean-lab";
 import { ContextLab } from "@/components/learn/context-lab";
 import { EmbedLab } from "@/components/learn/embed-lab";
 import { EvaluateLab } from "@/components/learn/evaluate-lab";
+import { FiguresLab } from "@/components/learn/figures-lab";
 import { ParseLab } from "@/components/learn/parse-lab";
 import { PromptLab } from "@/components/learn/prompt-lab";
 import { RewriteLab } from "@/components/learn/rewrite-lab";
@@ -33,6 +34,7 @@ const WIDGETS: Record<string, React.ComponentType> = {
   generate: CiteLab,
   evaluate: EvaluateLab,
   safety: SafetyLab,
+  figures: FiguresLab,
 };
 
 type Props = { params: Promise<{ slug: string }> };

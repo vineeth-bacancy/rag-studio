@@ -38,8 +38,8 @@ from typing import Any, Callable
 import pymupdf
 
 from rag_studio import __version__, paths, profiles, rerank as reranking, retrieve
-from rag_studio.answer import DEFAULT_K, GenerationSpec, ask, is_refusal
-from rag_studio.config import role_model
+from rag_studio.answer import DEFAULT_K, GenerationSpec, NotEnoughMemory, ask, is_refusal
+from rag_studio.config import ANSWER_RAM_GB, role_model
 from rag_studio.files import read_json, write_json_atomic
 from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
 from rag_studio.prompt import DEFAULT_VERSION, messages_sha256, prompt_sha256
@@ -286,8 +286,12 @@ class RunSpec:
         """Reranking (and, later, rewriting) holds models that must not sit in
         memory beside the answer model's own, so every question is searched
         first, those models are released, and then every question is answered.
-        A plain run keeps one question at a time, exactly as before."""
-        return self.search_spec.extended
+        Since M7 also for a large answer model: EmbeddingGemma 2 (2.2 GB) beside
+        gemma4:e4b (8 GB) is about 10 GB of this 15.7 GB laptop. The passages and
+        answers are the same either way; only the order of the work changes.
+        A plain run with a small model keeps one question at a time, as before."""
+        big = self.mode == "answer" and ANSWER_RAM_GB.get(self.model or role_model("answer"), 0.0) >= 6.0
+        return self.search_spec.extended or big
 
 
 class RunBusy(RuntimeError):
@@ -545,8 +549,9 @@ def execute(spec: RunSpec, *, run_id: str | None = None, cancel: Callable[[], bo
                     run["results"].append(res)
                     run["progress"]["done"] += 1
                     save(res)
-        except (RewriteUnavailable, RewriteBadOutput, RerankError) as e:
-            # Remote AI went away, or returned junk, mid-run: the run FAILS, with the questions it finished,
+        except (RewriteUnavailable, RewriteBadOutput, RerankError, NotEnoughMemory) as e:
+            # Remote AI went away, or returned junk, mid-run, or this computer has no memory for the answer
+            # model: the run FAILS, with the questions it finished,
             # rather than finishing as a run full of errors that looks like a result.
             run.update(status="failed", error=str(e), finished_at=_now(),
                        seconds=round(time.perf_counter() - t_run, 1))
@@ -638,6 +643,8 @@ def _answer_one(res: dict[str, Any], q: dict[str, Any], spec: RunSpec, r: Retrie
             done = (event, data)
     assert done is not None
     event, data = done
+    if event == "error" and data.get("not_enough_memory"):
+        raise NotEnoughMemory(data["error"])       # every later question would fail the same way
     if event == "error":
         res["error"] = data["error"]
         return

@@ -73,8 +73,9 @@ export default function AskPage() {
   const chosen = indexes?.profiles.find((p) => p.id === profile);
   const examples = golden?.sets.find((s) => s.id === "set-a")?.questions.filter((q) => q.id.startsWith("A")).slice(0, 4) ?? [];
   const noIndex = status && !status.indexed;
-  // The first question loads the search model into this app; with too little
-  // free memory that would push the computer into swap, so say so up front.
+  // The first question loads the search model into this app and the answer
+  // model into Ollama; with too little free memory that would push the
+  // computer into swap, so say so up front.
   const lowMemory = status?.memory.short && !busy;
 
   return (
@@ -120,7 +121,11 @@ export default function AskPage() {
         <EmptyState
           icon={MessageSquareText}
           title="Not enough free memory to answer yet"
-          description={`The first question loads the search model, which needs about ${status?.memory.needed_gb} GB, and ${status?.memory.free_gb} GB is free.`}
+          description={`The first question loads ${
+            status?.memory.parts?.length
+              ? status.memory.parts.map((p) => `${p.what} (about ${p.gb} GB)`).join(" and ")
+              : "the search model"
+          }: about ${status?.memory.needed_gb} GB in all, and ${status?.memory.free_gb} GB is free.`}
           hint="Close some apps, then reload this page. Asking now could slow the whole computer down."
         />
       ) : (

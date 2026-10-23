@@ -19,6 +19,7 @@ CACHE = DATA / "cache"        # rebuilt: parsed pages, context lines, figure des
 RUNS = DATA / "runs"          # rebuilt: evaluation runs
 CHAT = DATA / "chat"          # conversations, one JSON file each
 CONTEXT = DATA / "context"    # exported context lines, one JSONL file per profile (hours of GPU time; may be committed)
+FIGURES = DATA / "figures"    # exported figure descriptions, one JSONL file per figures profile (GPU time; may be committed)
 UPLOADS = DATA / "uploads"    # PDFs added through the browser
 
 # Session state that must never be committed (the Colab token, the connected

@@ -37,8 +37,10 @@ ROLES: tuple[Role, ...] = (
     # this is the default index's.
     Role("embed", "Embedding", "Turns passages and questions into vectors. Each index has its own model; "
          "this is the default index's.", "google/embeddinggemma-2", "python"),
+    # gemma4:e4b since M7 (the user's choice, 2026-10-23, from ladder row 10: 24 · 1 · 0, the best
+    # answer model measured here; ~47 s per answer and 8 GB). qwen3:1.7b stays the light option.
     Role("answer", "Answer", "Writes the answer from the retrieved passages.",
-         "qwen3:1.7b", "ollama"),
+         "gemma4:e4b", "ollama"),
     Role("rewrite", "Query rewriting", "Rewrites questions, turns follow-ups into full questions and decides "
          "when to search again.", "qwen3:8b", "ollama", where="remote"),
     Role("context", "Context lines", "Writes a sentence placing each passage in its document.",
@@ -47,8 +49,10 @@ ROLES: tuple[Role, ...] = (
     # judge, RAGAS and tracing were cut from M6). No model, so nothing local is checked for it.
     Role("judge", "Judge", "Checks answers against their passages during evaluation.",
          None, "ollama", arrives="a later version"),
-    Role("vision", "Vision", "Describes charts and figures as text.",
-         None, "ollama", arrives="M7"),
+    # M7: chosen by the bake-off on Set C's measured figures (2026-10-23; docs/steps/11-figures.md).
+    # Used only to write descriptions on Remote AI; a build reads them from the cache.
+    Role("vision", "Vision", "Describes charts and figures as text, once, for the index with figures.",
+         "gemma4:12b", "ollama", where="remote"),
     Role("rerank", "Reranker", "Re-orders search results by reading each passage with the question. "
          "Runs on this computer, or on Remote AI for the larger models.", "Qwen/Qwen3-Reranker-0.6B", "python"),
 )
@@ -66,14 +70,21 @@ def role_model(key: str) -> str:
     return role.model
 
 
+# Memory an answer model's runner takes once loaded, in GB: its peak resident size measured here
+# (llama-server RSS at num_ctx 8192: row 10, the M5 freeze). Loading one with less than this free
+# pushes the laptop into swap, which froze it twice; Ask and evaluation runs refuse instead.
+ANSWER_RAM_GB: dict[str, float] = {"qwen3:1.7b": 5.4, "qwen3.5:4b": 6.7, "gemma4:e4b": 8.0}
+
+
 # Measured behaviour worth showing beside a model in a picker (spec §10).
 MODEL_NOTES: dict[str, str] = {
     "qwen3:4b": "This build ignores thinking off: 128-829 s per answer here. Not recommended.",
     "qwen3:8b": "About 141-246 s per answer on this CPU; a full scorecard takes about 34 minutes.",
-    "qwen3:1.7b": "About 25 s per answer on this CPU. The baseline answer model.",
+    "qwen3:1.7b": "About 25 s per answer on this CPU. The baseline answer model, and the light option (5.4 GB).",
     # Ladder row 10 (2026-10-22), 6d + the 4B reranker, Sets A+D.
     "qwen3.5:4b": "Thinking off works. About 44 s per answer on this CPU (29-87 s), 6.7 GB in memory; "
                   "scored 22 · 1 · 2 like qwen3:1.7b, and its two Wrongs are refusals followed by an explanation.",
     "gemma4:e4b": "Thinking off works. About 47 s per answer on this CPU (29-102 s), 8 GB in memory: close other "
-                  "apps first. Scored 24 · 1 · 0, the best answer model measured here (both traps refused).",
+                  "apps first. Scored 24 · 1 · 0, the best answer model measured here (both traps refused). "
+                  "The default since M7.",
 }

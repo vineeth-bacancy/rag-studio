@@ -1,0 +1,108 @@
+{
+  "id": "set-c",
+  "name": "Set C",
+  "description": "Figures: every answer exists only as the size of a bar or a segment in a chart, never as text. It should fail without figure descriptions.",
+  "source": "Build spec §7 (C1) and M7 (C2-C4). Each truth block holds every value in its figure, the axis span and the tolerance a reading is held to (about 5% of the span; C2 0.3 points, the answer key's band). Every key was measured from the PDF's vector drawing (PyMuPDF get_drawings: rectangle and path heights, calibrated by the axis's own tick labels), checked against a 300 dpi crop, and searched for in the whole text of its document (not found). 2026-10-22.",
+  "scored": true,
+  "questions": [
+    {
+      "id": "C1",
+      "question": "In the iMac's carbon-footprint chart, which category makes up the largest part of the 445 kg baseline?",
+      "doc_id": "apple_imac_per_2024_10",
+      "answer_pages": [2],
+      "expect": [{"pattern": "materials and process", "label": "materials and process emissions"}],
+      "note": "Materials and process emissions, about 190 kg of the 445 kg (43%). Only the bar totals are printed; the text has the segment names but not their sizes. The iMac's own 346 kg bar is different: there electricity for product use (about 156 kg) is the largest, so reading the wrong bar gives a wrong answer.",
+      "truth": {
+        "figure": "Stacked bars: 445 kg baseline, -99 kg reductions, 346 kg iMac (page 2)",
+        "region": "apple_imac_per_2024_10:p2:f0",
+        "span": 445,
+        "tolerance": 22,
+        "method": "Bar heights in points; the 445 kg bar is 401 pt (1.110 kg/pt), the 346 kg bar 311 pt (1.113 kg/pt).",
+        "unit": "kg CO2e",
+        "values": [
+          {"bar": "Baseline (445 kg)", "segment": "Materials and process emissions", "value": 189.8, "drawn": "171 pt"},
+          {"bar": "Baseline (445 kg)", "segment": "Electricity for manufacturing", "value": 66.6, "drawn": "60 pt"},
+          {"bar": "Baseline (445 kg)", "segment": "Electricity for product use", "value": 155.4, "drawn": "140 pt"},
+          {"bar": "Baseline (445 kg)", "segment": "Transportation", "value": 33.3, "drawn": "30 pt"},
+          {"bar": "iMac (346 kg)", "segment": "Materials and process emissions", "value": 132.4, "drawn": "119 pt"},
+          {"bar": "iMac (346 kg)", "segment": "Electricity for manufacturing", "value": 43.4, "drawn": "39 pt"},
+          {"bar": "iMac (346 kg)", "segment": "Electricity for product use", "value": 155.8, "drawn": "140 pt"},
+          {"bar": "iMac (346 kg)", "segment": "Transportation", "value": 14.5, "drawn": "13 pt"}
+        ]
+      }
+    },
+    {
+      "id": "C2",
+      "question": "In the World Bank's outlook figure for South Asia, what share of the region's population is projected to live in poverty in 2028?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [97],
+      "expect": [{"pattern": "\\b(18[.,][6-9]|19(?:[.,][0-2])?)\\s*(?:%|percent|per cent)", "label": "about 18.9 percent (18.6-19.2 accepted)"}],
+      "note": "18.9 percent in 2028 (figure 2.7.D; the lower-middle-income poverty line of $4.20 a day). Read from the bar: accepted within 0.3 points (the axis spans 17-21). The text says only that poverty declines more slowly than expected in January.",
+      "truth": {
+        "figure": "Figure 2.7.D Poverty, South Asia (page 97)",
+        "region": "wb_gep_2026_06:p97:f3",
+        "span": 4,
+        "tolerance": 0.3,
+        "method": "Bar tops calibrated by the tick labels 17-21 (18.47 pt per percentage point).",
+        "unit": "percent of population",
+        "values": [
+          {"bar": "2025e", "value": 20.78},
+          {"bar": "2026f", "value": 20.07},
+          {"bar": "2027f", "value": 19.33},
+          {"bar": "2028f", "value": 18.93},
+          {"bar": "January 2026 forecast for 2025e", "value": 20.01},
+          {"bar": "January 2026 forecast for 2026f", "value": 18.71},
+          {"bar": "January 2026 forecast for 2027f", "value": 18.28}
+        ]
+      }
+    },
+    {
+      "id": "C3",
+      "question": "In the World Bank's chart of EMDE sovereign spreads around stress events, by about how much did the spreads of non-investment-grade economies rise during the 2020 pandemic?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [110],
+      "expect": [{"pattern": "\\b(49[5-9]|5[0-4]\\d|55[0-5])\\b", "label": "about 525 basis points (495-555 accepted)"}],
+      "note": "About 525 basis points (figure 3.1.C); 310 in the 2022 Federal Reserve tightening cycle; investment grade 191 and 36. Accepted within 30 basis points (the axis spans 0-600). The text has other spread numbers that are not this one (about 190 basis points on p120 is a debt scenario).",
+      "truth": {
+        "figure": "Figure 3.1.C Changes in EMDE sovereign spreads around stress events (page 110)",
+        "region": "wb_gep_2026_06:p110:f2",
+        "span": 600,
+        "tolerance": 30,
+        "method": "Bar tops calibrated by the tick labels 0-600 (10.74 basis points per pt).",
+        "unit": "basis points",
+        "values": [
+          {"bar": "Investment grade", "series": "2020 pandemic", "value": 191},
+          {"bar": "Investment grade", "series": "2022 Federal Reserve tightening cycle", "value": 36},
+          {"bar": "Non-investment grade", "series": "2020 pandemic", "value": 525},
+          {"bar": "Non-investment grade", "series": "2022 Federal Reserve tightening cycle", "value": 310}
+        ]
+      }
+    },
+    {
+      "id": "C4",
+      "question": "In the World Bank's chart of debt-distress risk in low- and middle-income countries, which risk category had the largest share of countries in 2026?",
+      "doc_id": "wb_gep_2026_06",
+      "answer_pages": [110],
+      "expect": [{"pattern": "moderate[- ]risk", "label": "moderate risk"}],
+      "note": "Moderate risk, about 40 percent of countries in 2026 (figure 3.1.D), ahead of high risk (34), in debt distress (13) and low risk (12). The text gives only the share in or at high risk of debt distress (about 50 percent; 26 in 2015).",
+      "truth": {
+        "figure": "Figure 3.1.D Risk of debt distress in low- and middle-income countries (page 110)",
+        "region": "wb_gep_2026_06:p110:f3",
+        "span": 100,
+        "tolerance": 5,
+        "method": "Segment heights calibrated by the tick labels 0-100; each stack measures 100.5 and is scaled to 100.",
+        "unit": "percent of countries",
+        "values": [
+          {"bar": "2015", "segment": "In debt distress", "value": 6.0},
+          {"bar": "2015", "segment": "High risk", "value": 20.5},
+          {"bar": "2015", "segment": "Moderate risk", "value": 51.4},
+          {"bar": "2015", "segment": "Low risk", "value": 22.0},
+          {"bar": "2026", "segment": "In debt distress", "value": 13.4},
+          {"bar": "2026", "segment": "High risk", "value": 34.3},
+          {"bar": "2026", "segment": "Moderate risk", "value": 40.0},
+          {"bar": "2026", "segment": "Low risk", "value": 12.1}
+        ]
+      }
+    }
+  ]
+}

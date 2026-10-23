@@ -420,6 +420,147 @@ def cmd_context(args: argparse.Namespace) -> int:
     return 2
 
 
+# --------------------------------------------------------------------------- ./rag figures
+
+# RAM a local vision call needs, in GB (peak llama-server RSS measured 2026-10-22, num_ctx 4096,
+# plus 1 GB): a local trial refuses below it. Colab is the place for a whole run.
+VISION_RAM_GB = {"qwen3.5:4b": 4.8, "gemma4:e4b": 8.5}
+
+
+def _figures_client(on: str, models: list[str]):
+    from rag_studio import ingest, remote
+    from rag_studio.llm import OllamaClient
+    if on == "colab":
+        return remote.client()
+    free = ingest.available_ram_gb()
+    need = max(VISION_RAM_GB.get(m, 9.0) for m in models)
+    if free is not None and free < need:
+        raise RuntimeError(f"Only {free:.1f} GB of memory is free, and a local vision call needs about {need:.1f} GB. "
+                           "Close some apps, or describe on Remote AI (--on colab).")
+    return OllamaClient()
+
+
+def _release(client, model: str) -> None:
+    """Unload a vision model, never raising: a runtime that has gone must not hide the job's own error."""
+    try:
+        client.unload(model)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _print_truth(model: str, digest: str | None, version: str) -> list[dict]:
+    """Every Set C figure's description from `model`, beside the values measured from the drawing."""
+    from rag_studio import vision
+    rows = []
+    for t in vision.truth_figures():
+        r = vision.region(t["region"])
+        _, sha = vision.image_for(r)
+        entry = vision.get_entry(model, digest, sha, version) if digest else None
+        print(f"\n== {t['qid']} {t['figure']}  [{t['region']}]  model {model}, prompt {version}")
+        if entry is None:
+            print("   no description yet")
+            continue
+        if entry.get("bad"):
+            print(f"   bad output: {entry['bad']['error']}")
+            rows.append({"qid": t["qid"], "model": model, "bad": entry["bad"]})
+            continue
+        print("   " + entry["description"].replace("\n", "\n   "))
+        chk = vision.truth_check(entry["description"], t)
+        print(f"   -- {entry.get('ms', 0) / 1000:.1f} s, {entry.get('prompt_tokens')} prompt tokens, "
+              f"{entry.get('eval_tokens')} written; kind: {vision.kind_of(entry['description']) or '-'}")
+        for v in chk["values"]:
+            name = " / ".join(str(v[k]) for k in ("bar", "segment", "series") if v.get(k))
+            got = "-" if v["reading"] is None else f"{v['reading']:g}"
+            err = "-" if v["error_share"] is None else f"{v['error_share']:.1%} of the axis"
+            print(f"   {'ok ' if v['read'] else '   '} {name:<58} drawn {v['value']:<7g} read {got:<8} {err}")
+        print(f"   read {chk['read']} of {chk['of']} within {chk['tolerance']:g} {t['unit']}; "
+              f"mean error {'-' if chk['mean_error_share'] is None else format(chk['mean_error_share'], '.1%')} of the axis "
+              f"over {chk['found']} values found")
+        rows.append({"qid": t["qid"], "model": model, "description": entry["description"], "check": chk,
+                     "ms": entry.get("ms"), "prompt_tokens": entry.get("prompt_tokens"),
+                     "eval_tokens": entry.get("eval_tokens")})
+    return rows
+
+
+def cmd_figures(args: argparse.Namespace) -> int:
+    from collections import Counter
+    from datetime import datetime
+    from rag_studio import paths, remote, vision
+    from rag_studio.files import write_json_atomic
+    from rag_studio.llm import OllamaUnavailable
+    try:
+        if args.action == "list":
+            regs = vision.regions()
+            per = Counter(r.doc_id for r in regs)
+            print(f"{len(regs)} figures (Docling pictures of at least {vision.MIN_AREA:.1%} of a page):")
+            for doc, n in per.items():
+                print(f"  {doc:<28} {n}")
+            if args.show:
+                for r in regs:
+                    print(f"{r.figure_id:<34} {r.area:6.1%}  {r.title_above or '-'}  | {r.heading or '-'}")
+            return 0
+        if args.action == "status":
+            s = vision.status(args.model, args.prompt)
+            print(f"{s['model']}: {s['described']} of {s['figures']} figures described "
+                  f"({s['indexed']} charts and diagrams go into the index, {s['pictures']} photos or logos do not); "
+                  f"{s['bad']} bad outputs, {s['missing']} not described yet; digest {s['digest'] or '-'}")
+            job = vision.last_job(args.model)
+            if job:
+                print(f"  last job: {job['status']} at {job.get('finished_at') or job['started_at']}")
+            return 0
+        if args.action == "export":
+            r = vision.export(profiles.get(args.profile_id))
+            print(f"Wrote {r['figures']} descriptions to {r['path']}")
+            return 0
+        if args.action == "import":
+            print(f"Loaded {vision.import_export(args.profile_id)} descriptions into the cache.")
+            return 0
+        if args.action == "check":
+            digest = (vision.lookup(args.model, [vision.image_for(vision.region(t["region"]))[1]
+                                                 for t in vision.truth_figures()], args.prompt)[1])
+            _print_truth(args.model, digest, args.prompt)
+            return 0
+        models = args.models if args.action == "try" else [args.model]
+        client = _figures_client(args.on, models)
+
+        def say(stage: str, i: dict) -> None:
+            if stage == "figures":
+                print(f"\r  {i['done']} / {i['total']} figures{' (bad output)' if i['bad'] else ''}   ",
+                      end="", flush=True)
+
+        if args.action == "try":
+            ids = [t["region"] for t in vision.truth_figures() if not args.only or t["qid"] in args.only] + (args.figure or [])
+            report = {"at": datetime.now().isoformat(timespec="seconds"), "on": args.on, "figures": ids,
+                      "prompt_version": args.prompt, "prompt_sha256": vision.prompt_sha256(args.prompt), "models": {}}
+            for model in models:
+                print(f"{model}: describing {len(ids)} figures on {'Remote AI' if args.on == 'colab' else 'this computer'}")
+                s = vision.write_descriptions(model, client=client, figure_ids=ids, say=say, prompt_version=args.prompt)
+                print(f"\n  {s['described']} described, {s['bad']} bad, {s['already']} remembered; "
+                      f"median {(s['median_ms'] or 0) / 1000:.1f} s; {s['with_thinking']} with thinking")
+                report["models"][model] = {"summary": s, "figures": _print_truth(model, s["digest"], args.prompt)}
+                # The next candidate, the reranker or this laptop needs the memory: never leave a vision
+                # model resident (two left on a T4 starved the worker, 2026-10-23).
+                _release(client, model)
+            out = paths.CACHE / "figures" / f"bakeoff-{datetime.now():%Y%m%d-%H%M%S}.json"
+            write_json_atomic(out, report)
+            print(f"\nReport: {out}")
+            return 0
+        if args.action == "describe":
+            try:
+                s = vision.write_descriptions(args.model, client=client, limit=args.limit, say=say,
+                                              prompt_version=args.prompt)
+            finally:
+                _release(client, args.model)   # free the GPU for the reranker (or this laptop's memory)
+            print(f"\nDescribed {s['described']} figures ({s['bad']} bad outputs, {s['already']} remembered) in "
+                  f"{s['seconds']} s, median {(s['median_ms'] or 0) / 1000:.1f} s each; {s['with_thinking']} with thinking.")
+            return 0
+    except (vision.FiguresMissing, vision.FiguresBusy, vision.FiguresCancelled, remote.RemoteNotConnected,
+            OllamaUnavailable, RuntimeError, KeyError) as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        return 1
+    return 2
+
+
 # --------------------------------------------------------------------------- ./rag rerank
 
 def cmd_rerank(args: argparse.Namespace) -> int:
@@ -592,6 +733,35 @@ def main(argv: list[str] | None = None) -> int:
         if name == "write":
             q.add_argument("--limit", type=int, help="write at most this many lines (a trial run)")
     p.set_defaults(func=cmd_context)
+
+    from rag_studio import vision
+    p = sub.add_parser("figures", help="figures as text: describe charts with a vision model, then build the -fig index")
+    fg = p.add_subparsers(dest="action", required=True)
+    q = fg.add_parser("list", help="every figure region Docling found")
+    q.add_argument("--show", action="store_true", help="one line per figure: id, size, title, heading")
+    q = fg.add_parser("status", help="how many figures a model has described")
+    q.add_argument("--model", default=vision.VISION_MODEL)
+    q.add_argument("--prompt", default=vision.PROMPT_VERSION, choices=sorted(vision.PROMPTS))
+    q = fg.add_parser("try", help="describe the Set C figures with each model and check them against the drawing")
+    q.add_argument("--models", nargs="+", required=True, metavar="TAG")
+    q.add_argument("--figure", nargs="*", metavar="ID", help="more figures to try (document:p<page>:f<n>)")
+    q.add_argument("--only", nargs="*", metavar="QID", help="only these Set C figures, e.g. C1 C4")
+    q.add_argument("--on", choices=("colab", "local"), default="colab")
+    q.add_argument("--prompt", default=vision.PROMPT_VERSION, choices=sorted(vision.PROMPTS))
+    q = fg.add_parser("describe", help="describe every figure not described yet (resumable)")
+    q.add_argument("--model", default=vision.VISION_MODEL)
+    q.add_argument("--on", choices=("colab", "local"), default="colab")
+    q.add_argument("--limit", type=int, help="describe at most this many (a trial run)")
+    q.add_argument("--prompt", default=vision.PROMPT_VERSION, choices=sorted(vision.PROMPTS))
+    q = fg.add_parser("check", help="the Set C figures' descriptions beside the drawing's values (no model call)")
+    q.add_argument("--model", default=vision.VISION_MODEL)
+    q.add_argument("--prompt", default=vision.PROMPT_VERSION, choices=sorted(vision.PROMPTS))
+    for name, text in (("export", "write a figures index's descriptions to data/figures/<profile>.jsonl"),
+                       ("import", "load an exported file back into the cache")):
+        q = fg.add_parser(name, help=text)
+        q.add_argument("profile_id", choices=sorted(i for i, pr in profiles.PROFILES.items() if pr.figures),
+                       metavar="PROFILE")
+    p.set_defaults(func=cmd_figures)
 
     p = sub.add_parser("rerank", help="the local reranker: download it, or measure dtype and batch size")
     rr = p.add_subparsers(dest="action", required=True)

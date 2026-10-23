@@ -181,6 +181,28 @@ on this CPU (~35 tok/s), so the passage count is the main speed lever. Treat
 figure reading as an ingest-time job (about a minute per page), never per query.
 gemma4:e4b is benchmarked against it at M6, loaded alone (see the §0 audit).
 
+### 5.1 Figures: choosing the vision model (M7, 2026-10-23)
+
+Scope (user, 2026-10-22): vision descriptions only, on the Colab T4; no image
+embeddings. The four Set C figures were measured from the PDF's vector paths
+first (`docs/steps/11-figures.md`), then each candidate described them.
+
+| Fact | Status |
+|---|---|
+| gemma4:12b + prompt vision-v1 on the T4: C2 7/7 values within 0.3 pt (mean error 0.7% of the axis), C3 4/4 (≈0.7%), C4 stacked 8/8 (1.5%), C1 axis-less stacked 4/8 (7.3%) but the answer right; 19-20 s per figure once loaded; prompts 517-645 tokens | VERIFIED-LIVE |
+| qwen3.5:9b + v1 on the T4: plain bars as good (C2 7/7, C3 4/4); C1 cut at 900 tokens; C4 a one-line table with wrong values (moderate 2015 72 vs 51.4 drawn); ~11 tokens/s; prompts 790-947 tokens | VERIFIED-LIVE |
+| qwen3.5:4b + v1/v2 on this CPU: plain bars right (C2 7/7, C3 4/4); both stacked charts fail (C1 puts the bar totals into segment rows; C4 corrects itself out loud until cut off); 80-276 s per figure | VERIFIED-LIVE |
+| vision-v2 (stacked-bar reading instructions, "don't correct yourself") helped no model and made gemma4:12b worse on C1 | VERIFIED-LIVE |
+| Chart-to-table on World Bank charts (WB-ChartExtract, arXiv 2605.27298, 2026-05-26): DePlot 23.1, TinyChart 28.6, Qwen3-VL-235B 52.9, Gemini 2.5 Pro 87.8 RMS-F1; most errors are wrong values and missing points, labels almost never; asking for a table with the chart's own headers works best | VERIFIED-DOC (research agent's reading, 2026-10-22) |
+| Normalised error (each error over the axis range): PaperUnPlot, VLDB 2026 TaDA workshop | VERIFIED-DOC (research agent's reading) |
+| Gemma 4 sends an image as a fixed budget of 70-1,120 tokens (llama.cpp clip); Ollama exposes no setting for it, so detail comes from cropping each panel; Qwen3.5 uses about one token per 32×32 pixels | VERIFIED-DOC (research agent's reading of the model cards and source) |
+| Docling 2.93+ can extract chart data with Granite Vision 4.1 4B (`do_chart_extraction`, preset `granite_vision_v4`, bar/pie/line pictures only); present in our docling 2.139.0 | VERIFIED-LIVE (module present in the venv); not run |
+| No MCP server or Claude skill found that beats measuring the vector drawing; several send images off the machine | VERIFIED-DOC (research agent, 2026-10-22) |
+
+**Chosen: gemma4:12b with vision-v1** (the only candidate that reads stacked
+bars, no bad outputs, the fastest). An independent second reader (Granite
+Vision through Docling) is possible later, on Colab.
+
 ## 6. Qwen3-Reranker
 
 | Fact | Status |
@@ -423,5 +445,9 @@ appendix. The main ones:
   2410.13070 (semantic chunking), 2104.08663 (BEIR), 2407.01449 (ColPali),
   2406.12624 (judging the judges), 2408.04667 (non-determinism), 2412.12509;
   thinkingmachines.ai "Defeating Nondeterminism in LLM Inference".
+- Figures (added 2026-10-23, M7): arXiv 2605.27298 (WB-ChartExtract and self-ensembling,
+  github.com/tberkane/vlm-ensemble-chart); PaperUnPlot (VLDB 2026 TaDA,
+  github.com/giorgiomelch/about_chart_to_table); huggingface.co/ibm-granite/granite-vision-4.1-4b;
+  docling `models/stages/chart_extraction/granite_vision.py` (2.139.0, read locally).
 - Chat memory (added 2026-10-22): aclanthology.org/D19-1605 (CANARD);
   ir.webis.de/anthology/2021.wsdm_conference-2021.43 (Vakulenko et al., WSDM 2021).

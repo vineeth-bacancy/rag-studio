@@ -144,9 +144,14 @@ export const STAGES: Stage[] = [
   {
     slug: "figures",
     title: "Figures",
-    what: "Read charts as text with a vision model, or match them as images.",
+    what: "Read each chart once with a vision model and add its description to the index as a figure passage.",
     example: "The iMac chart shows each part of the 445 kg baseline only as a bar's height. No number is printed.",
     arrives: "M7",
+    explain: [
+      "A chart's labels are already in the text, but what it shows is not: each bar's size exists only as a drawing, so a vision model describes every chart once and the index adds that description as a figure passage.",
+      "Without it, the right page can be found and the question still cannot be answered; with it, part of the answer is a model's reading of a picture, so it is marked as one and checked against the drawing.",
+      "Pick a figure below to see what the text already had, what the model wrote, and each value it read beside the value measured from the PDF.",
+    ],
   },
   {
     slug: "evaluate",

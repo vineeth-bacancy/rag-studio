@@ -164,7 +164,9 @@ def test_every_real_run_on_disk_keeps_its_group():
         pytest.skip("No earlier runs to check against")
     from rag_studio.files import read_json
     cfgs = [c for c in (read_json(f).get("config") for f in files) if c
-            and not {"rerank", "rewrite", "agent_rounds"} & set(c.get("retrieval") or {})]       # made before M5
+            and not {"rerank", "rewrite", "agent", "agent_rounds"} & set(c.get("retrieval") or {})]   # made before M5
+    # (A multi-step run records its controller under "agent": two of them shared the old key with a
+    # plain 5d run, a difference the old key never could see, and the check failed on real data, 2026-10-23.)
     old = {ev._legacy_key(c) for c in cfgs}
     new = {ev.config_key(c) for c in cfgs}
     assert len(old) == len(new)
@@ -294,7 +296,7 @@ def test_no_set_means_every_set_that_runs_here(capsys, monkeypatch):
     seen = {}
     monkeypatch.setattr(ev, "execute", lambda spec, **k: seen.setdefault("sets", spec.sets) and (_ for _ in ()).throw(RuntimeError("stop")))
     cli.main(["eval", "--mode", "retrieval", "--profile", "baseline"])
-    assert seen["sets"] == ["set-a", "set-b", "set-d"]            # Set E needs Remote AI: it is named on purpose
+    assert seen["sets"] == ["set-a", "set-b", "set-c", "set-d"]   # Set E needs Remote AI: it is named on purpose
 
 
 # ------------------------------------------------------------------ what the Evaluation page shows

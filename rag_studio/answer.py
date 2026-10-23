@@ -24,9 +24,9 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Iterator
 
-from rag_studio import guard, profiles, retrieve
-from rag_studio.config import OLLAMA_URL, role_model
-from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable
+from rag_studio import guard, profiles, retrieve, vision
+from rag_studio.config import ANSWER_RAM_GB, OLLAMA_URL, role_model
+from rag_studio.llm import OllamaClient, OllamaError, OllamaUnavailable, same_model
 from rag_studio.prompt import (DEFAULT_VERSION, REFUSAL, build_messages, estimate_tokens,
                                looks_truncated, prompt_chars, prompt_sha256)
 from rag_studio.rerank import RerankError
@@ -93,6 +93,30 @@ def citations(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+class NotEnoughMemory(RuntimeError):
+    """Loading the answer model now would push this computer into swap. The message says what to do."""
+
+
+def check_memory(model: str, client: Any) -> dict[str, Any] | None:
+    """Refuse to load a local answer model without the memory it takes (config.ANSWER_RAM_GB).
+    A model already loaded, a remote client, a test stand-in or an unmeasured model is not checked."""
+    from rag_studio import ingest, llm
+    need = ANSWER_RAM_GB.get(model)
+    # The real class from llm, not this module's name for it (tests stand in for that one).
+    if need is None or not isinstance(client, llm.OllamaClient) or client.remote:
+        return None
+    try:
+        if any(same_model(m.name, model) for m in client.resident()):
+            return None
+    except (OllamaUnavailable, OllamaError):
+        return None                     # Ollama itself will say what is wrong
+    free = ingest.available_ram_gb()
+    if free is not None and free < need:
+        raise NotEnoughMemory(f"Not enough free memory to load {model}: it needs about {need:.1f} GB and "
+                              f"{free:.1f} GB is free. Close some apps, then try again.")
+    return {"need_gb": need, "free_gb": None if free is None else round(free, 1)}
+
+
 def _source(hit: dict[str, Any], n: int) -> dict[str, Any]:
     return {"n": n, "rank": hit["rank"], "chunk_id": hit["chunk_id"], "doc_id": hit["doc_id"],
             "page": hit["page"], "page_label": hit.get("page_label"),
@@ -105,6 +129,8 @@ def _source(hit: dict[str, Any], n: int) -> dict[str, Any]:
             # The line that placed the passage in its document (contextual
             # retrieval). It was embedded, not shown to the answer model.
             "context": hit.get("context"),
+            # A figure passage is a vision model's reading of a picture (M7): say which model wrote it.
+            "described_by": vision.described_by(hit["text"]) if hit["type"] == "figure" else None,
             # Checked live, so a passage from any index is screened the same way.
             "flags": guard.instruction_flags(hit["text"])}
 
@@ -182,6 +208,7 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
         yield "ready", info
 
         stage = "generate"
+        check_memory(gen.model, client)
         t0 = time.perf_counter()
         first_token_ms: float | None = None
         parts: list[str] = []
@@ -232,6 +259,8 @@ def ask(question: str, *, k: int = DEFAULT_K, model: str | None = None,
     except OllamaError as e:
         yield "error", {"stage": stage, "error": f"The model returned an error: {e.message}",
                         "trace": trace.as_list()}
+    except NotEnoughMemory as e:
+        yield "error", {"stage": stage, "error": str(e), "trace": trace.as_list(), "not_enough_memory": True}
     except Exception as e:  # noqa: BLE001 - the stream must end with a reason, not a dropped socket
         yield "error", {"stage": stage, "error": str(e) or type(e).__name__,
                         "trace": trace.as_list()}

@@ -295,6 +295,29 @@ print(json.dumps({"model": sys.argv[1], "stream": False, "think": False, "keep_a
     fi
 }
 
+release_model() {
+    # Free a model's GPU memory now instead of after the 30-minute keep-alive. The startup load is
+    # a check, not a warm-up: two vision models left resident (6.2 + 8.0 GB) left the worker 60 MB
+    # of a T4, and it died loading a 1.2 GB reranker (2026-10-23). The first real request reloads it.
+    ollama stop "$1" >/dev/null 2>&1 || true
+}
+
+release_all_models() {
+    local names
+    names="$(curl -s --max-time 10 "$OLLAMA_URL/api/ps" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(" ".join(m.get("name", "") for m in json.load(sys.stdin).get("models") or []))
+except Exception:
+    pass
+' || true)"
+    for n in $names; do release_model "$n"; done
+}
+
+gpu_free_mb() {
+    nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -d ' '
+}
+
 stop_all() {
     say "Stopping"
     pkill -f cloudflared 2>/dev/null && dim "  stopped cloudflared"
@@ -465,6 +488,9 @@ for M in $MODELS; do
             good "$M: on the GPU ($(( VRAM / 1024 / 1024 )) MB)"
         fi
     fi
+    # Checked alone, then released: every model gets the whole GPU for its check, and nothing is
+    # left holding memory the next model or the worker needs.
+    release_model "$M"
 done
 
 fi   # models asked for
@@ -490,6 +516,18 @@ if [[ -n "$WORKER" ]]; then
         || die "torch or sentence-transformers cannot be imported after the install"
     fi
     pkill -f "$HERE/worker.py" 2>/dev/null
+    # Ollama does not know the worker exists: anything it still holds (an earlier run's models, kept
+    # 30 minutes) is GPU memory the worker cannot have. Release it all before the worker loads.
+    (( SKIP_OLLAMA )) || release_all_models
+    sleep 2
+    FREE_MB="$(gpu_free_mb || true)"
+    dim "     GPU memory free before the worker loads: ${FREE_MB:-?} MiB"
+    # Fail before the downloads, not after them: the worker downloads every reranker first and only
+    # then loads one, so running out of memory there wastes the whole download (2026-10-23).
+    if [[ "$FREE_MB" =~ ^[0-9]+$ ]] && (( FREE_MB < 3000 )); then
+        nvidia-smi >&2 || true
+        die "only ${FREE_MB} MiB of GPU memory is free, and the worker needs about 3000 MiB for its first reranker. Something else holds the GPU (see above)."
+    fi
     WORKER_PORT="$WORKER_PORT" daemon python3 "$HERE/worker.py" --port "$WORKER_PORT" --models "$RERANKERS" ${CONTEXT_FLAG[@]+"${CONTEXT_FLAG[@]}"} >"$WORKER_LOG" 2>&1 &
     dim "     downloading and loading the weights (minutes the first time; the log is $WORKER_LOG) ..."
     WCODE="$(wait_for_http "http://127.0.0.1:$WORKER_PORT/worker" 1800 200)"

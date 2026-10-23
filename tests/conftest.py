@@ -110,7 +110,7 @@ def tmp_data(tmp_path, monkeypatch):
     directory. The PDFs and test questions stay the real, committed ones."""
     from rag_studio import paths, retrieve
 
-    for name in ("LANCEDB", "INDEXES", "RUNS", "CACHE", "CHAT", "CONTEXT"):
+    for name in ("LANCEDB", "INDEXES", "RUNS", "CACHE", "CHAT", "CONTEXT", "FIGURES"):
         monkeypatch.setattr(paths, name, tmp_path / name.lower())
     monkeypatch.setattr(retrieve, "_cache", {})
     return tmp_path

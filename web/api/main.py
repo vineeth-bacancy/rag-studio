@@ -17,7 +17,7 @@ import sse
 from guard import RequestGuard, allowed_origins
 from rag_studio import (__version__, answer, colab, embed, eval as evaluation, health, indexes, ingest, learn,
                         library, paths, profiles, remote, store)
-from rag_studio import chat
+from rag_studio import chat, vision
 from rag_studio import context as context_mod
 from rag_studio import rerank as rerank_mod
 from rag_studio import rewrite as rewrite_mod
@@ -114,15 +114,19 @@ def get_page_image(doc_id: str, page: int, dpi: int = Query(110, ge=36, le=220))
 
 @app.get("/api/documents/{doc_id}/pages/{page}/boxes")
 def get_passage_boxes(doc_id: str, page: int, start: int = Query(..., ge=0),
-                      end: int = Query(..., ge=1), profile: str = Query(profiles.DEFAULT, max_length=40),
+                      end: int = Query(..., ge=0), profile: str = Query(profiles.DEFAULT, max_length=40),
                       chunk: str | None = Query(None, max_length=200)) -> dict:
     """Where a passage sits on the page. The baseline index stores exact
     character spans of PyMuPDF's text; a cleaned index's text differs, so its
-    passage is found by aligning words (PyMuPDF) or by Docling's item boxes."""
-    if end <= start:
-        _fail(400, "The passage end must come after its start.")
+    passage is found by aligning words (PyMuPDF) or by Docling's item boxes.
+    A figure passage (M7) is model-written text with no span on the page: its
+    box is the picture's own."""
     path = _doc_path(doc_id)
     prof = _profile(profile)
+    if prof.figures and chunk and _FIGURE_ID.search(chunk):
+        return _figure_boxes(doc_id, page, chunk)
+    if end <= start:
+        _fail(400, "The passage end must come after its start.")
     try:
         if prof.cleaner == profiles.BASELINE.cleaner and prof.parser == profiles.BASELINE.parser:
             return passage_boxes(path, page, start, end)
@@ -136,6 +140,24 @@ def get_passage_boxes(doc_id: str, page: int, start: int = Query(..., ge=0),
         return aligned_boxes(path, page, passage["text"])
     except IndexError as e:
         _fail(404, str(e))
+
+
+_FIGURE_ID = re.compile(r":p\d+:f\d+$")
+
+
+def _figure_boxes(doc_id: str, page: int, chunk: str) -> dict:
+    try:
+        r = vision.region(chunk)
+    except (KeyError, vision.FiguresMissing):
+        _fail(404, "That figure is not in the document any more. Ask the question again.")
+    if r.doc_id != doc_id or r.page != page:
+        _fail(404, "That figure is not on this page.")
+    doc = library.clean_doc(doc_id, "docling")
+    if doc is None:
+        _fail(404, "Docling has not converted this document yet. Run: ./rag ingest --profile docling-clean")
+    pg = doc.pages[page - 1]
+    box = {"x0": r.box[0] / pg.width, "y0": r.box[1] / pg.height, "x1": r.box[2] / pg.width, "y1": r.box[3] / pg.height}
+    return {"width": pg.width, "height": pg.height, "boxes": [box], "aligned": 1.0, "figure": True}
 
 
 def _docling_boxes(doc_id: str, page: int, start: int, end: int) -> dict:
@@ -747,6 +769,29 @@ def get_context_lab(profile: str = Query(learn.CONTEXT_DEFAULT, max_length=60),
     without it; with a test question id, where its answer ranks on the plain
     and the -ctx index. Reads the context-line cache only: no model call."""
     return _learn_call(learn.context_lab, _profile(profile).id, question, chunk)
+
+
+_FIGURE_PATTERN = r"^[a-z0-9_]+:p[0-9]{1,4}:f[0-9]{1,3}$"
+
+
+@app.get("/api/learn/figures")
+def get_figures_lab(figure: str | None = Query(None, max_length=120, pattern=_FIGURE_PATTERN)) -> dict:
+    """Step 11: one figure before (the text a search already had) and after (the vision model's
+    description and the passage it becomes; for a Set C figure, every value it read beside the value
+    measured from the PDF's drawing). Reads the description cache only: no model call."""
+    return _learn_call(learn.figures_lab, figure)
+
+
+@app.get("/api/figures/{figure_id}/image")
+def get_figure_image(figure_id: str) -> Response:
+    """A figure region as the vision model saw it (PNG, drawn from the PDF)."""
+    if not re.match(_FIGURE_PATTERN, figure_id):
+        _fail(400, "A figure is named document:p<page>:f<n>.")
+    try:
+        png, _ = vision.image_for(vision.region(figure_id))
+    except (KeyError, vision.FiguresMissing):
+        _fail(404, "That figure is not in the documents.")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/api/learn/rewrite")

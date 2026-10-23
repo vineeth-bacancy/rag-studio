@@ -105,7 +105,13 @@ function SourceRow({
             {ranks && <span className="tabular-nums">({ranks})</span>}
             <span aria-hidden>·</span>
             <span>Section {s.section_path ?? NO_DATA}</span>
-            <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">{TYPE[s.type]}</Badge>
+            <Badge
+              variant="outline"
+              className="h-4 px-1.5 text-[10px] font-normal"
+              title={s.type === "figure" ? "A description of the picture written by a vision model, not the document's own words." : undefined}
+            >
+              {s.type === "figure" ? `Figure (described by ${s.described_by ?? "a vision model"})` : TYPE[s.type]}
+            </Badge>
             {KIND[s.kind] && (
               <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-normal" title={KIND[s.kind]?.hint}>
                 {KIND[s.kind]?.label}

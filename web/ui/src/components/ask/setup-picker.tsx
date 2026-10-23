@@ -11,7 +11,7 @@ import { useAsk } from "./ask-store";
  * Which index answers come from, how it is searched, and which prompt version
  * the model gets. Only indexes that can be asked now can be chosen (built,
  * and for a Colab index, the runtime connected); the others say why. BM25 and hybrid need the index's word index. The defaults are the
- * ones the API names (row 5d, prompt v3) until the scorecard says otherwise.
+ * ones the API names (row 11a, prompt v3) until the scorecard says otherwise.
  */
 export function SetupPicker({ disabled }: { disabled?: boolean }) {
   const { data: indexes } = useSWR<IndexesResponse>("/indexes");

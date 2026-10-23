@@ -48,6 +48,8 @@ carry none (ports, file paths, Python names) move one layer down.
 | Moving extra passages of one section behind the others | **limit per section** | section cap | dedupe, diversity filter |
 | Re-scoring the top results with a slower model | **reranking** | cross-encoder | re-sorting |
 | A model's sentence placing a passage in its document | **context line** | contextual retrieval | summary, header |
+| A chart or diagram's text written by a vision model, kept in the index | **figure passage** ("Figure (described by gemma4:12b)") | vision description, `type: "figure"` | caption, alt text, OCR |
+| A picture Docling found on a page | **figure** (photos and logos are figures that are not indexed) | picture item, region | image (in primary UI), graphic |
 | A thread of questions and answers kept on this computer | **conversation** (New conversation) | chat (`data/chat/`) | session, thread (in primary UI) |
 | A question that leans on an earlier turn ("And for 2027?") | **follow-up question** | standalone rewrite | context query |
 | What a follow-up was searched as, after Remote AI made it whole | **Searched for: …** (with **Ask as typed**) | standalone question | reformulated query |
@@ -81,8 +83,8 @@ at rank N) or **Miss**. The stored values stay `PASS` / `REFUSED` / `WRONG`.
 
 ### Model-generated content is always labelled
 
-- "Figure (described by qwen3.5:4b)" for a vision description.
-- "Figure (image match)" for an image-embedding hit.
+- "Figure (described by gemma4:12b)" for a figure passage (M7). Image matching was cut, so there is no
+  "Figure (image match)".
 - "Context line (written by qwen3:1.7b)" in the inspector.
 - Query rewrites are shown as rewrites: "Searched for: …".
 

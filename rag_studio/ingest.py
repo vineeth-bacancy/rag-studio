@@ -366,6 +366,7 @@ class Cut:
     meta: dict[str, dict[str, Any]]
     cleaned: dict[str, clean.CleanDoc]
     timings: dict[str, float]
+    figures: dict[str, Any] | None = None     # a figures profile's summary (vision.passages)
 
 
 def passages_for(profile: IndexProfile, *, say: Progress = lambda stage, info: None,
@@ -401,9 +402,17 @@ def passages_for(profile: IndexProfile, *, say: Progress = lambda stage, info: N
             for p in cut:
                 meta[p.chunk_id] = _passage_rows_meta(by_page[p.page], p)
         passages += cut
+    figures = None
+    if profile.figures:
+        # M7: a passage per chart, from the cached descriptions (never a model call here).
+        from rag_studio import vision
+        extra, extra_meta, figures = vision.passages(profile, {d.doc_id: d.title for d in docs})
+        passages += extra
+        meta |= extra_meta
+        say("figures", figures)
     timings["chunk_s"] = time.perf_counter() - t
     say("chunk", {"passages": len(passages), "seconds": timings["chunk_s"]})
-    return Cut(docs, passages, meta, cleaned, timings)
+    return Cut(docs, passages, meta, cleaned, timings, figures)
 
 
 def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on: str) -> BuildResult:
@@ -529,6 +538,8 @@ def _build(profile: IndexProfile, *, force: bool, say: Progress, client: Any, on
     }
     if profile.chunker.method == "semantic":
         manifest["semantic"] = {"sentence_vectors": "cached by sha256 of the sentence, per model digest"}
+    if cut.figures is not None:
+        manifest["figures"] = cut.figures
     store.activate(manifest)
     dropped = store.prune(profile.id)
     say("done", {"table": name, "rows": len(rows), "dropped": dropped,

@@ -53,18 +53,20 @@ Present now (M4). Each RAG step has a doc in `docs/steps/`.
 | `agent.py` | Multi-step search: after round 1, the rewrite role answers or searches again (a new query, optionally inside one validated document) until enough evidence, the round, time or token budget, a repeated query or bad output |
 | `remote_cache.py` | Every Remote AI output (rewrites, follow-ups, round decisions), keyed by model digest, prompt hash, num_ctx and input, with the order it was generated in: a retrieval run and its scorecard see the same rewrites |
 | `context.py` | Contextual retrieval: windows (same-section blocks of at most 6,000 tokens), prompt context-v1, the line cache, the resumable Remote AI job (2 batches in flight, a timed-out batch asked again), the export to `data/context/` |
+| `vision.py` | Figures as text (M7): regions from Docling's picture items (widened to a title printed above, panel-title sections dropped), PNGs drawn from the PDF and identified by hash, prompt vision-v1, the description cache (bad outputs kept, so a rebuild replays exactly), the resumable Remote AI job (one per model), figure passages for the `-fig` index (photos and logos left out by the model's Kind line), export to `data/figures/`, and `truth_check` against Set C's values measured from the drawing |
 | `chat.py` | Conversations in `data/chat/<32 hex>.json`, written atomically; memory acts only through the follow-up rewrite |
 | `prompt.py` | Versioned system prompts (v2, v2-handbuilt, v3 with passages fenced as data, v4 with rule 4 relaxed for labelled passages) with sha256; the context block (with the section label when a passage has one); truncation check |
-| `answer.py` | The one answering path: events stage → ready → delta → done/error; the guard step; citations built by code |
+| `answer.py` | The one answering path: events stage → ready → delta → done/error; the guard step; citations built by code; a figure source says which model described it; the memory check before a local answer model loads (M7) |
 | `trace.py` | The in-app trace: each finished step with its duration |
 | `eval.py` | Test-question sets, the scorer, runs (saved after every question, one at a time; two passes when a reranker or rewrite is on: search every question, release the search models, then answer from the same passages), MRR and recall@20, Set E's follow-up chain, the ladder with variants, two-run comparison |
 | `library.py` | The PDFs, their titles, what the active index holds of each, and the page inspector's data |
-| `learn.py` | How it works: the chunk playground, the search lab (three lists side by side), the vector store's tables, versions and indexes, the exact-vs-ANN recall check on a scratch copy, the embedding lab (PCA map, Matryoshka cuts, mixed models), the search lab's reranked column, context lines (step 4) and rewriting replayed from runs or run live (step 8); M6: a recorded answer replayed from its run's own index build (steps 9 and 10: exact messages, budget, citations, an editable answer read by the same code), a run's scorecard taken apart with a Wilson interval and a sign test (step 12), and the guard on the crafted page and the real hidden-text pages, with a live v2/v3 demo through `answer.ask` (step 13) |
+| `learn.py` | How it works: the chunk playground, the search lab (three lists side by side), the vector store's tables, versions and indexes, the exact-vs-ANN recall check on a scratch copy, the embedding lab (PCA map, Matryoshka cuts, mixed models), the search lab's reranked column, context lines (step 4) and rewriting replayed from runs or run live (step 8); M6: a recorded answer replayed from its run's own index build (steps 9 and 10: exact messages, budget, citations, an editable answer read by the same code), a run's scorecard taken apart with a Wilson interval and a sign test (step 12), and the guard on the crafted page and the real hidden-text pages, with a live v2/v3 demo through `answer.ask` (step 13); M7: one figure before and after, with every value read beside the value measured from the drawing and Set C's recorded answers (step 11) |
 | `health.py` | System Health: every check returns a status from one vocabulary and never raises |
-| `cli.py` | Terminal views behind `./rag`: health, ingest, index, llm, context, rerank, eval |
+| `cli.py` | Terminal views behind `./rag`: health, ingest, index, llm, context, figures, rerank, eval |
 
-Planned: `vision` (M7, figures as text). Cut from this version (2026-10-22,
-`docs/plans/m6-m8.md`): the `judge`, RAGAS/DeepEval and tracing export. Outside the
+Cut from this version (2026-10-22, `docs/plans/m6-m8.md`): the `judge`,
+RAGAS/DeepEval, tracing export, and figure image embeddings (M7 is vision
+descriptions only). Outside the
 package: `tools/colab/` (the gateway, the GPU worker and the start script, which
 run on the Colab runtime; docs/02-remote-gpu.md).
 
@@ -111,6 +113,8 @@ run on the Colab runtime; docs/02-remote-gpu.md).
 | `GET /api/learn/evaluate?run=&against=` | Step 12: a run's grid, facts with spans, reciprocal ranks, Set E chain, Wilson interval, sign test against another run |
 | `GET /api/learn/safety?source=&page=`, `…/pages`, `…/image?view=`, `…/flags?text=` | Step 13: a page through the guard (the crafted page or a real hidden-text page), its three images, the instruction check on any text |
 | `POST /api/learn/safety/live?version=v2\|v3` | Step 13, live: the crafted page answered now by the Answer role's model through `answer.ask` (one at a time) |
+| `GET /api/learn/figures?figure=` | Step 11 (M7): one figure before and after (description cache only, no model call) |
+| `GET /api/figures/{figure_id}/image` | A figure region as the vision model saw it (PNG); a figure passage's page boxes are its picture's box |
 
 Interactive schema: http://127.0.0.1:8775/api/_docs while the app is running.
 
@@ -153,6 +157,7 @@ The model is *reachability*, as in the trading app:
 | `data/cache/` | no | Rendered pages; `docling/` converted documents (about 15 min to rebuild for all three); `clean/` cleaned documents per parser (seconds). Keyed by content hash (and options, and the cleaning code's hash) |
 | `data/runs/` | no | Evaluation runs with their full configuration |
 | `data/chat/` | no | Conversations, one JSON file each |
+| `data/figures/` | ask | Figure descriptions exported per figures profile (`./rag figures export`): GPU time, not regenerable word for word |
 | `data/context/` | ask | Context lines exported per profile (`./rag context export`): hours of T4 time that cannot be regenerated word for word, so worth keeping |
 | `~/.local/state/rag-studio/` | no (outside repo) | Colab token and connection, mode 0600 |
 

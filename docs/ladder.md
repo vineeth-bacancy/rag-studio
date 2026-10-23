@@ -48,7 +48,76 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 9b | 6d + multi-step search | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
 | 10a | 6d with qwen3.5:4b answering (thinking off) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M6 ✓ |
 | 10b | 6d with gemma4:e4b answering (thinking off) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **13 · 1 · 0** | M6 ✓ |
+| 11 (before) | 5d with gemma4:e4b answering: the app's default setup since M7 (no reranker) | **9/9** | - | 10/11 | 10 · 0 · 1 | 11 · 1 · 2 | M7 ✓ (Set C 0 · 3 · 1) |
+| 11a | 5d + a passage for every chart (described by gemma4:12b), gemma4:e4b answering | **9/9** | - | 10/11 | 10 · 0 · 1 | 11 · 1 · 2 | M7 ✓ (**Set C 4 · 0 · 0**) |
 | 11 | Figure paths | - | - | - | - | - | M7 |
+
+## Row 11, measured 2026-10-23
+
+**One change from the default index (5d): a passage for every chart.** 237
+figure passages, written by gemma4:12b on the Colab T4 (prompt vision-v1,
+`docs/steps/11-figures.md`), added to 5d's 1,473 text passages
+(`docling-structure-embeddinggemma2-fig`, 1,710 rows). Same embedding, dense
+search, top 5. Row 11 is measured **without the reranker** (user, 2026-10-23:
+a vision-only Colab session), so its "before" is 5d itself, with gemma4:e4b
+answers.
+
+| Retrieval (deterministic) | Run | Set A | Set C | Set D | MRR | Recall@20 |
+|---|---|---|---|---|---|---|
+| 5d (no figures) | `20261023-084058-7910` | 9/9 | 4/4 | 10/11 | 0.871 | 24/24 |
+| 5d + figures | `20261023-084112-afa1` | 9/9 | 4/4 | 10/11 | **0.892** | 24/24 |
+
+- **Set C:** both indexes find the answer *page* (its text has the labels), but
+  only the figures index finds the *figure*: the Set C figure passage is rank 1
+  for all four (C3 page rank 2 → 1). On 5d the page's text has no sizes, so
+  the answer is not there to read.
+- **Sets A and D:** every answer page at the same rank as on 5d. Seven of the 25
+  have a figure passage in their top 5 instead of a text passage (A3, A8, D4,
+  D9, and the traps T1, T4, T5). Every expected fact of the four answerable ones
+  is still in the new top 5 (A3's "375" was in the displaced passage and also
+  in another). The traps are the risk: T4 (the MacBook Air) now sees the iMac
+  chart's description.
+
+**Answer scorecards** (gemma4:e4b, prompt v3, Pass · Refused · Wrong; both under
+`scripts/eval_watchdog.sh`, VS Code and Vivaldi closed):
+
+| Variant | Run | Set A | Set C | Set D | A+D | Answer time, median (range) | Peak memory |
+|---|---|---|---|---|---|---|---|
+| 11 (before): 5d | `20261023-150923-8680` | 10 · 0 · 1 | 0 · 3 · 1 | 11 · 1 · 2 | 21 · 1 · 3 | 42.2 s (25.0-98.7) | runner 9.3 GB, 3.8 GB left free |
+| **11a: 5d + figures** | `20261023-153310-8b12` | 10 · 0 · 1 | **4 · 0 · 0** | 11 · 1 · 2 | 21 · 1 · 3 | 45.3 s (34.1-96.5) | runner 9.5 GB, 3.9 GB left free |
+
+**What row 11 says.**
+
+1. **Set C goes from 0 to 4 Pass, and nothing else changes**: Sets A and D give
+   the same outcome on every question (sign test on the 4 changed questions:
+   4 better, 0 worse, p = 0.125, a hint). Without figures gemma4:e4b refused
+   C1, C2 and C4 (the right thing to do with labels and no sizes) and answered
+   C3 Wrong, inventing "between 4 and 6 basis points" from a regression table.
+   With them: C2 "approximately 18.9%" (drawn 18.93), C3 "approximately 520
+   basis points" (525), C4 "Moderate risk … approximately 39%", then high 33,
+   distress 14, low 14 (40 · 34 · 13 · 12). **C1 is a weak pass**: the answer
+   lists the four parts in order ("Materials and process emissions, Electricity
+   for product use, … are listed as the largest components") instead of naming
+   the largest; the key matches because materials comes first.
+2. **The traps hold.** T1, T4 and T5 now have a figure passage in their top 5
+   (T4, the MacBook Air, sees the iMac chart) and all three are still the exact
+   refusal.
+3. **The default setup (5d, no reranker) with gemma4:e4b is 21 · 1 · 3 on
+   A+D**, three below 10b (6d, the 4B reranker): A5 never mentions interest
+   rates, D3 lists both years' net income without stating the change, and D10
+   (two documents) answers the GPO half and refuses the iMac half (its page is
+   at rank 13). Same answer model, so on these three the difference is the
+   reranker (one run each).
+4. **gemma4:e4b is not word-for-word repeatable at temperature 0.** 18 questions
+   saw the same five passages in both runs; 16 answers were identical and 2
+   (A9, D5) were worded differently from byte-identical prompts (same
+   `messages_sha256`), both still Pass. Likely its draft model (speculative
+   decoding). So a run cannot be "completed" by reusing another run's answers.
+
+**The default since 2026-10-23 (user):** `docling-structure-embeddinggemma2-fig`
+(row 11a), with gemma4:e4b answers. On a fresh `data/` it needs
+`./rag figures import docling-structure-embeddinggemma2-fig` before the build
+(the descriptions are committed in `data/figures/`).
 
 ## Row 10, measured 2026-10-22
 

@@ -1184,3 +1184,94 @@ def safety_live(version: str, model: str | None = None) -> dict[str, Any]:
     return {"version": version, "answer": text, "refused": result["refused"], "says_visible": visible,
             "says_injected": injected, "verdict": verdict, "model": result["model"], "usage": result["usage"],
             "trace": result["trace"], "citations": result["citations"]}
+
+
+# --------------------------------------------------------------------------- step 11: figures
+
+# The figures How it works starts from: Set C's four (each measured from the PDF's drawing), a chart
+# GEP drew as a picture with no text layer, and a photo whose caption already says everything.
+FIGURE_EXAMPLES: list[tuple[str, str | None, str]] = [
+    ("apple_imac_per_2024_10:p2:f0", "C1", "iMac carbon footprint: each part only as a bar's height"),
+    ("wb_gep_2026_06:p97:f3", "C2", "South Asia poverty: bars with no numbers"),
+    ("wb_gep_2026_06:p110:f2", "C3", "Sovereign spreads around stress events"),
+    ("wb_gep_2026_06:p110:f3", "C4", "Debt-distress risk: a stacked bar"),
+    ("wb_gep_2026_06:p27:f5", None, "A chart drawn as a picture: no text at all"),
+    ("apple_imac_per_2024_10:p4:f2", None, "A photo: its caption already says everything"),
+]
+NEARBY_PT = 40.0     # text this close to a picture's box, outside it, is shown as what is printed beside it
+
+
+def _near(box: list[float], fig: list[float], gap: float = NEARBY_PT) -> bool:
+    dx = max(fig[0] - box[2], box[0] - fig[2], 0.0)
+    dy = max(fig[1] - box[3], box[1] - fig[3], 0.0)
+    return dx <= gap and dy <= gap
+
+
+def _set_c_runs(limit: int = 6) -> list[dict[str, Any]]:
+    """Recorded answers to Set C, newest first: what each setup said, and whether it passed."""
+    out = []
+    for run in _done_answer_runs():
+        rows = [r for r in run.get("results", []) if str(r.get("id", "")).startswith("C")]
+        if not rows:
+            continue
+        out.append({**evaluation.run_head(run), "rows": [
+            {"id": r["id"], "outcome": r.get("outcome"), "best_rank": r.get("best_rank"),
+             "answer": (r.get("answer") or "")[:600] or None, "error": r.get("error")} for r in rows]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def figures_lab(figure_id: str | None = None) -> dict[str, Any]:
+    """Step 11: one figure before and after. Before: the text a search already had (the labels
+    printed inside the picture, the text beside it). After: the vision model's description, the
+    passage it becomes, and, for a Set C figure, every value it read beside the value measured
+    from the PDF's drawing. Reads the description cache only; it never asks a model."""
+    from rag_studio import vision
+    model, version = vision.VISION_MODEL, vision.PROMPT_VERSION
+    figure_id = figure_id or FIGURE_EXAMPLES[0][0]
+    try:
+        r = vision.region(figure_id)
+    except KeyError:
+        raise LookupError(f"No figure {figure_id}. Pick one from the list.") from None
+    _, sha = vision.image_for(r)
+    got, digest = vision.lookup(model, [sha], version)
+    entry = got.get(sha) or {}
+    description = None if entry.get("bad") else entry.get("description")
+    page = library.clean_doc(r.doc_id, "docling").pages[r.page - 1]
+    texts = [i for i in page.items if i.get("start") is not None and i["label"] != "picture"]
+    inside = [page.text[i["start"]:i["end"]] for i in texts if vision._inside(i["box"], r.box)]
+    beside = [{"label": i["label"], "text": page.text[i["start"]:i["end"]][:400]} for i in texts
+              if not vision._inside(i["box"], r.box) and _near(i["box"], r.box)][:4]
+    picture = bool(description) and vision.is_picture(description)
+    indexed = bool(description) and not picture
+    title = pdf_title(library.pdf_path(r.doc_id))
+    truth = next((t for t in vision.truth_figures() if t["region"] == figure_id), None)
+    question = None
+    if truth:
+        q = next(q for q in evaluation.load_sets()["set-c"]["questions"] if q["id"] == truth["qid"])
+        question = {"id": q["id"], "question": q["question"], "key": evaluation.fact_label(q["expect"][0]),
+                    "note": q.get("note")}
+    return {
+        "model": model, "prompt_version": version, "digest": digest,
+        "status": vision.status(model, version),
+        "examples": [{"figure_id": f, "qid": qid, "label": label} for f, qid, label in FIGURE_EXAMPLES],
+        "figure": {
+            "figure_id": r.figure_id, "doc_id": r.doc_id, "page": r.page, "page_label": r.page_label,
+            "box": r.box, "crop": r.crop, "area": r.area, "dpi": vision.dpi_for(r.crop),
+            "title_above": r.title_above, "heading": r.heading, "section_path": r.section_path,
+            "image": f"/api/figures/{r.figure_id}/image", "image_sha256": sha,
+        },
+        "before": {"inside": inside, "beside": beside},
+        "after": {
+            "description": description, "bad": entry.get("bad"), "kind": vision.kind_of(description) if description else None,
+            "indexed": indexed, "picture": picture,
+            "passage": vision.passage_text(r, model, description) if indexed else None,
+            "label": chunk.section_label(title, r.section_path, r.kind) if indexed else None,
+            "ms": entry.get("ms"), "prompt_tokens": entry.get("prompt_tokens"), "eval_tokens": entry.get("eval_tokens"),
+        },
+        "truth": ({k: truth[k] for k in ("qid", "figure", "method", "unit", "span", "tolerance")}
+                  | {"check": vision.truth_check(description, truth) if description else None}) if truth else None,
+        "question": question,
+        "set_c_runs": _set_c_runs(),
+    }

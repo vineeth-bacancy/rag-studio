@@ -31,7 +31,8 @@ Always use `./rag`; it resolves the venv.
 ```
 ./rag web       # API on 127.0.0.1:8775, UI on 127.0.0.1:3100 (dev mode, both reload)
 ./rag ingest    # build the BASELINE index (≈7 min; a no-op when nothing changed; --force); --profile for others.
-                # The app's default index is docling-structure-embeddinggemma2 (row 5d): ./rag index build <id>
+                # The app's default index is docling-structure-embeddinggemma2-fig (row 11a = 5d + figures):
+                # ./rag figures import <id> (on a fresh data/), then ./rag index build <id>
 ./rag eval      # the scorecard (--set a b d, --mode retrieval, --model, --prompt, --ladder ROW, --tag RUN_ID)
 ./rag health    # Ollama, models per role, documents, indexes, memory, disk
 ./rag test      # pytest
@@ -268,6 +269,41 @@ Warning / Needs attention / Unavailable.
   cleaning cache key, `ingest._code_hash`); `./rag test` triggers that read
   (here at 21:31 on 2026-10-22). Don't do it beside a scorecard whose timings
   matter.
+
+## Engine gotchas (learned in M7)
+
+- **Plan a Colab cell's GPU memory before the user runs it, step by step**, not just that it builds:
+  every model `start.sh` loads, the worker's first reranker, and what stays resident between them.
+  On 2026-10-23 two startup-checked vision models stayed resident (6.2 + 8.0 GB) and the worker
+  OOMed on a T4 after ~40 min of downloads. `start.sh` now releases each model after its check and
+  everything before the worker, and fails before the downloads below 3000 MiB free. Ollama does not
+  evict for another process; it spills its own models to the CPU instead.
+- **Ask for the smallest session that answers the question**: every new runtime downloads everything
+  again (three vision models + two rerankers was ~27 GB). Run what fits here (qwen3.5:4b) locally.
+- **A chart value is measured, never eyeballed**: `get_drawings()` rect/path heights calibrated by
+  the axis's tick labels, then a 300 dpi crop. A 90 dpi visual read of a GEP bar was 0.4 points off;
+  the last bar of a series is often a line path (`l` items), not a `re`.
+- GEP draws ~57 chart panels as raster images with no text layer, and Docling leaves chart-panel
+  titles ("D. Poverty") outside the picture box and makes them headings (wrong section labels).
+- **Read every vision description yourself; the checker is a hint.** Models write tables loosely (no
+  outer pipes, "Data:" on the header, the first column's value inside the row label, series named by
+  colour); `truth_check` missed or misplaced values three times before it learnt each form.
+- A `try` process imports `vision.py` when it starts: a checker fixed meanwhile is not the one it
+  prints. Re-run `./rag figures check` (no model call) after changing the checker.
+- Small vision models read plain bars to ~1% of the axis and fail stacked bars (qwen3.5:4b/9b); a
+  prompt with stacked-bar instructions (vision-v2) did not fix that and hurt gemma4:12b.
+- Evaluation runs are two-pass when the answer model is large (`ANSWER_RAM_GB` ≥ 6): EmbeddingGemma 2
+  (2.2 GB) beside gemma4:e4b (8 GB) is too much for this laptop. Ask/eval refuse to load an answer
+  model without its `ANSWER_RAM_GB` free (`answer.check_memory`).
+- Figure passages can take top-5 slots from text passages without moving any answer page's rank
+  (7 of 25 A/D questions): compare the top 5, not just recall, and check the trap questions.
+- **gemma4:e4b is not word-for-word repeatable at temperature 0**: 2 of 18 byte-identical prompts
+  (same `messages_sha256`) gave differently worded answers (row 11; likely its draft model). Never
+  complete a run with another run's answers; measure the whole set.
+- Another app can hold the shared Ollama: Hermes Agent loaded qwen3:8b (6.8 GB) on 2026-10-23 and is
+  now disabled at the user's request. Wait for a foreign model's `expires_at`; never unload it.
+- `scripts/run_progress.sh` shows a running evaluation (bar, ETA, outcomes, free memory) without the
+  web app; give it to the user when the UI is stopped to save memory.
 
 ## UI gotchas (learned in M3)
 

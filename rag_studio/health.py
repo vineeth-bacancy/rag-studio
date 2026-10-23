@@ -372,9 +372,17 @@ def status() -> dict[str, Any]:
             if not any(same_model(m["name"], o) for o in ours)]
     manifest = store.active_manifest(profiles.DEFAULT)
     from rag_studio import embed, ingest, remote
-    # Asking loads the default index's embedder in this process the first time.
+    # Asking loads the default index's embedder in this process the first time, and the answer
+    # model in Ollama when it is not loaded (gemma4:e4b, the default since M7, takes about 8 GB).
+    from rag_studio.config import ANSWER_RAM_GB
     spec = profiles.get(profiles.DEFAULT).embedding
-    need = embed.ST_LOAD_GB if spec.backend == embed.ST and not embed.STModel.is_loaded(spec) else None
+    parts = []
+    if spec.backend == embed.ST and not embed.STModel.is_loaded(spec):
+        parts.append({"what": "the search model", "gb": embed.ST_LOAD_GB})
+    model = answer["model"]
+    if model and ANSWER_RAM_GB.get(model) and not any(same_model(m["name"], model) for m in snap["resident"]):
+        parts.append({"what": model, "gb": ANSWER_RAM_GB[model]})
+    need = round(sum(x["gb"] for x in parts), 1) if parts else None
     free = ingest.available_ram_gb()
     conn = remote.connection()
     return {
@@ -389,7 +397,7 @@ def status() -> dict[str, Any]:
         # Memory the first question needs and what is free now; Ask explains a
         # shortfall instead of failing on the first question.
         "memory": {"needed_gb": need, "free_gb": round(free, 1) if free is not None else None,
-                   "short": bool(need and free is not None and free < need)},
+                   "short": bool(need and free is not None and free < need), "parts": parts},
         "indexed": manifest is not None,
         "index": ({"profile": manifest["profile"], "label": manifest["label"],
                    "rows": manifest["rows"], "built_at": manifest["built_at"]}

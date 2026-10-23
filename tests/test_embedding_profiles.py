@@ -295,6 +295,10 @@ def test_local_and_colab_vectors_match():
     here. One text per request, as the match check does: a batch adds the
     server's own path noise (docs/02-remote-gpu.md)."""
     spec = profiles.QWEN3_06B
+    from rag_studio import remote
+    if remote.client().model_info(spec.model) is None:
+        # A runtime started for another job (M7's vision-only cell) does not serve it: skip, never fail.
+        pytest.skip(f"the connected runtime does not serve {spec.model}")
     texts = [f"Passage {i}: global growth is projected at {2 + i / 10:.1f} percent in 2026." for i in range(20)]
     here = np.array(embed._one_by_one(Embedder(spec, on="local"), texts))
     there = np.array(embed._one_by_one(Embedder(spec, on="colab"), texts))

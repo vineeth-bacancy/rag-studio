@@ -78,6 +78,8 @@ class IndexProfile:
     contextual: bool
     embedding: EmbeddingSpec
     metric: str = "cosine"  # LanceDB defaults to squared L2: always set it
+    # M7: the vision model whose figure descriptions are added as passages, or None.
+    figures: str | None = None
 
     def config(self) -> dict:
         """The recorded configuration, minus what only a build knows (digest)."""
@@ -90,6 +92,11 @@ class IndexProfile:
             # every other profile's recorded setup stays byte-identical.
             from rag_studio import context
             d["context"] = context.describe()
+        # The same for figures: the key exists only on a figures profile.
+        del d["figures"]
+        if self.figures:
+            from rag_studio import vision
+            d["figures"] = vision.describe(self.figures)
         return d
 
 
@@ -232,13 +239,30 @@ ROW7 = [replace(
                 "sees only the passage.")
     for base in (next(p for p in ROW5 if p.id == f"{b}-structure-embeddinggemma2") for b in ("pymupdf", "docling"))]
 
+# Ladder row 11 (M7): one change from the default index (5d), a passage for every chart and
+# diagram, written from its image by a vision model on the Colab GPU (vision.py). Docling only:
+# the figures are Docling's picture items.
+def _row11() -> IndexProfile:
+    from rag_studio import vision
+    base = next(p for p in ROW5 if p.id == "docling-structure-embeddinggemma2")
+    return replace(
+        base, id=f"{base.id}-fig", label=f"{base.label}, with figures", figures=vision.VISION_MODEL,
+        description=f"{base.description} Each chart and diagram also becomes a passage: a description of its "
+                    f"image (title, axes, every value with its unit) written by {vision.VISION_MODEL} on Remote AI, "
+                    "marked as a figure and as model-written.")
+
+
+ROW11 = [_row11()]
+
 PROFILES: dict[str, IndexProfile] = {p.id: p for p in (
     BASELINE, PYMUPDF_CLEAN, DOCLING_CLEAN,
-    PYMUPDF_SNAP, PYMUPDF_STRUCTURE, DOCLING_STRUCTURE, PYMUPDF_SEMANTIC, *ROW5, *ROW7)}
-# The app's default index since M5 (2026-10-16): row 5d on the ladder. `./rag
-# ingest` still builds BASELINE unless told otherwise (cli.py), because on a
-# wiped data/ this default would start a 866 s Docling conversion.
-DEFAULT = "docling-structure-embeddinggemma2"
+    PYMUPDF_SNAP, PYMUPDF_STRUCTURE, DOCLING_STRUCTURE, PYMUPDF_SEMANTIC, *ROW5, *ROW7, *ROW11)}
+# The app's default index since M7 (user, 2026-10-23): row 11a, 5d plus a passage
+# per chart (Set C 0 · 3 · 1 -> 4 · 0 · 0, Sets A+D unchanged). Row 5d was the
+# default from M5 (2026-10-16). `./rag ingest` still builds BASELINE unless told
+# otherwise (cli.py), because on a wiped data/ this default would start a 866 s
+# Docling conversion and needs the figure descriptions (`./rag figures import`).
+DEFAULT = "docling-structure-embeddinggemma2-fig"
 
 
 def build_command(profile_id: str) -> str:

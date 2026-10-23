@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from rag_studio.config import role_model
+
 from rag_studio import health
 from rag_studio.llm import OllamaClient, same_model
 
@@ -42,12 +44,12 @@ def test_python_roles_report_their_download_without_loading(monkeypatch):
 
 def test_foreign_resident_model_is_reported_busy():
     snap = {"up": True, "host": "x", "version": "0", "error": None,
-            "installed": [{"name": "qwen3:1.7b"}, {"name": "qwen3:8b"}, {"name": "nomic-embed-text:latest"}],
-            "resident": [{"name": "gemma4:e4b", "size": 6_600_000_000, "expires_at": None}]}
+            "installed": [{"name": role_model("answer")}, {"name": "qwen3:8b"}, {"name": "nomic-embed-text:latest"}],
+            "resident": [{"name": "llama3.2:3b", "size": 2_000_000_000, "expires_at": None}]}     # another app's
     checks = health._ai_checks(snap, health.role_rows(snap))
     busy = next(c for c in checks if c.id == "busy")
     assert busy.status == "warning"
-    assert "gemma4:e4b" in busy.message
+    assert "llama3.2:3b" in busy.message
 
 
 def test_status_endpoint_shape(client):
@@ -71,7 +73,7 @@ def test_health_lists_installed_models(client):
 
 def test_remote_roles_are_not_checked_against_the_local_ollama(monkeypatch):
     from rag_studio import health
-    names = ["qwen3:1.7b", "nomic-embed-text:latest"]                   # no local role needs qwen3:8b (the trading app's)
+    names = [role_model("answer"), "nomic-embed-text:latest"]          # no local role needs qwen3:8b (the trading app's)
     snap = {"up": True, "installed": [{"name": n} for n in names], "resident": [], "host": "h", "version": "0",
             "error": None}
     rows = {r["role"]: r for r in health.role_rows(snap)}
@@ -81,7 +83,7 @@ def test_remote_roles_are_not_checked_against_the_local_ollama(monkeypatch):
     assert health._ai_checks(snap, list(rows.values()))[1].status == "healthy"
     snap["installed"] = [{"name": "nomic-embed-text:latest"}]       # the answer model is gone locally
     miss = health._ai_checks(snap, list(health.role_rows(snap)))[1]
-    assert miss.status == "needs_attention" and "ollama pull qwen3:1.7b" in miss.fix
+    assert miss.status == "needs_attention" and f"ollama pull {role_model('answer')}" in miss.fix
     assert "qwen3:8b" not in miss.message and "qwen3:8b" not in (miss.fix or "")   # remote roles never ask for a pull
     assert rows["embed"]["runs_on"] == "python" and rows["rerank"]["runs_on"] == "python"
 
@@ -98,5 +100,5 @@ def test_a_connected_runtime_says_whether_it_serves_the_remote_roles(monkeypatch
 
 def test_the_models_this_app_loads_exclude_remote_roles():
     from rag_studio import config, health
-    assert {"qwen3:1.7b", "nomic-embed-text:latest"} <= health._our_models()
+    assert {role_model("answer"), "nomic-embed-text:latest"} <= health._our_models()
     assert [r.key for r in config.ollama_roles()] == ["answer"]   # rewrite and context run on Remote AI; no judge in this version

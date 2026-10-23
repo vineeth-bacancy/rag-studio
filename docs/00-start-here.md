@@ -20,8 +20,8 @@ only if the scorecard says it helps.
 ./rag ingest --profile docling-clean   # Docling + cleaning (about 15 min of Docling the first time, then cached)
 ./rag ingest --profile pymupdf-structure   # structure-aware passages with section labels (about 7 min)
 ./rag ingest --profile docling-structure   # the same on Docling (about 8 min; needs docling-clean's conversion)
-./rag index build docling-structure-embeddinggemma2   # the app's default index (row 5d; about 30 min the first time)
-./rag eval --set a b      # the scorecard: answer and score the test questions (about 5 min on qwen3:1.7b)
+./rag figures import docling-structure-embeddinggemma2-fig && ./rag index build docling-structure-embeddinggemma2-fig   # the app's default index since M7 (row 11a: 5d + figures; about 30 min the first time)
+./rag eval --set a b      # the scorecard: answer and score the test questions (gemma4:e4b, the default answer model since M7: ~47 s an answer, 8 GB; --model qwen3:1.7b is the light option)
 ./rag eval --mode retrieval   # recall@5 only, no model: a few seconds
 ./rag eval --search hybrid --cap 2   # search by meaning and by words (RRF), at most 2 passages per section
 ./rag index list          # every index profile: its model, where it builds, whether it is built
@@ -34,6 +34,9 @@ only if the scorecard says it helps.
 ./rag eval --set e         # follow-up questions (Remote AI); --as-typed searches them without the rewrite
 ./rag rerank download     # the local reranker, Qwen3-Reranker-0.6B (1.2 GB)
 ./rag context status docling-structure-embeddinggemma2-ctx   # context lines: status | write | check | export | import
+./rag figures status      # figure descriptions: list | status | try | describe | check | export | import (Remote AI)
+./rag llm colab --models gemma4:12b --copy   # a vision-only runtime for ./rag figures describe (no worker)
+./rag index build docling-structure-embeddinggemma2-fig   # the default index plus a passage per chart (needs the descriptions)
 ./rag llm colab --copy    # the Colab setup cell, on the clipboard (docs/02-remote-gpu.md)
 ./rag llm colab --models qwen3:8b --worker context qwen3-0.6b-gpu qwen3-4b --copy   # rewriting, context lines, GPU rerankers
 ./rag llm connect         # connect to the runtime with the code it showed (reads the clipboard)
@@ -73,7 +76,7 @@ adds the word index (for BM25) to a build that lacks one, in place.
 | M4 | Colab gateway and connect code, index profiles (Qwen3-Embedding 0.6B, EmbeddingGemma 2, Qwen3-Embedding 8B on Colab), the Indexes page, the vector match check, How it works 5. Ladder row 5 | **Done** (2026-10-15) |
 | M5 | Reranker (0.6B here, 4B/8B on Colab), context lines, query rewriting, multi-step search, conversations with follow-up rewriting; the Search lab's reranked column; How it works 4 and 8. Ladder rows 6-9, Set E | **Done** (2026-10-22) |
 | M6 | Answer models qwen3.5:4b and gemma4:e4b (thinking off verified), ladder row 10; How it works 9, 10, 12, 13 | **Done** (2026-10-22; gemma4:e4b 24 · 1 · 0. The judge, RAGAS and tracing were cut) |
-| M7 | Figures as vision descriptions (Set C), ladder row 11; How it works 11 | Next (image embeddings cut) |
+| M7 | Figures as vision descriptions (Set C), ladder row 11; How it works 11 | **Done** (2026-10-23; gemma4:12b descriptions, Set C 0 · 3 · 1 → 4 · 0 · 0, A+D unchanged; image embeddings cut) |
 | M8 | Full QA, polish, complete docs | Planned (browser upload deferred to a later version) |
 
 The reduced plan for M6-M8 (decided 2026-10-22) is `docs/plans/m6-m8.md`.

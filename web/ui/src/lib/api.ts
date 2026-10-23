@@ -191,8 +191,13 @@ export interface AppStatus {
   documents: number;
   default_profile: string;
   build_command: string;
-  /** What the first question loads in this app, and what is free now (GB). */
-  memory: { needed_gb: number | null; free_gb: number | null; short: boolean };
+  /** What the first question loads (the search model in this app, the answer model in Ollama), and what is free now (GB). */
+  memory: {
+    needed_gb: number | null;
+    free_gb: number | null;
+    short: boolean;
+    parts?: { what: string; gb: number }[];
+  };
   indexed: boolean;
   index: { profile: string; label: string; rows: number; built_at: string } | null;
   version: string;
@@ -338,6 +343,8 @@ export interface Source {
   context?: string | null;
   /** Moved behind the others by "Limit per section". */
   capped?: boolean;
+  /** A figure passage's vision model: the text is that model's reading of a picture, not the document's words. */
+  described_by?: string | null;
   /** Instruction-like phrases in the passage. Shown, never hidden. */
   flags: GuardFlag[];
 }
@@ -1695,4 +1702,128 @@ export interface SafetyLive {
   usage: Usage;
   trace: TraceStep[];
   citations: Citations;
+}
+
+/** Step 11 (`figures_lab`). Boxes are PDF points: [x0, y0, x1, y1]. */
+export interface FigureStatus {
+  model: string;
+  prompt_version: string;
+  digest: string | null;
+  figures: number;
+  described: number;
+  indexed: number;
+  pictures: number;
+  bad: number;
+  missing: number;
+}
+
+export interface FigureExample {
+  figure_id: string;
+  qid: string | null;
+  label: string;
+}
+
+export interface FigureInfo {
+  figure_id: string;
+  doc_id: string;
+  page: number;
+  page_label: string | null;
+  box: [number, number, number, number];
+  crop: [number, number, number, number];
+  area: number;
+  dpi: number;
+  title_above: string | null;
+  heading: string | null;
+  section_path: string[];
+  image: string;
+  image_sha256: string;
+}
+
+export interface FigureBeside {
+  label: string;
+  text: string;
+}
+
+export interface FigureAfter {
+  description: string | null;
+  /** A rejected output, kept so a rebuild replays it: what the model wrote and why it was rejected. */
+  bad: { raw: string; error: string } | null;
+  kind: string | null;
+  indexed: boolean;
+  picture: boolean;
+  passage: string | null;
+  label: string | null;
+  ms: number | null;
+  prompt_tokens: number | null;
+  eval_tokens: number | null;
+}
+
+export interface FigureCheckValue {
+  bar?: string | null;
+  segment?: string | null;
+  series?: string | null;
+  value: number;
+  drawn: string | null;
+  reading: number | null;
+  error: number | null;
+  error_share: number | null;
+  read: boolean;
+}
+
+export interface FigureCheck {
+  values: FigureCheckValue[];
+  read: number;
+  of: number;
+  tolerance: number;
+  found: number;
+  mean_error_share: number | null;
+}
+
+export interface FigureTruth {
+  qid: string;
+  figure: string;
+  method: string;
+  unit: string;
+  span: number;
+  tolerance: number;
+  check: FigureCheck | null;
+}
+
+export interface FigureQuestion {
+  id: string;
+  question: string;
+  key: string;
+  note: string;
+}
+
+export interface FigureSetCRow {
+  id: string;
+  outcome: Outcome | null;
+  best_rank: number | null;
+  answer: string | null;
+  error: string | null;
+}
+
+export interface FigureSetCRun {
+  id: string;
+  label: string | null;
+  ladder: number | null;
+  started_at: string | null;
+  status: string;
+  config: { profile: string; answer_model: string; prompt_version: string; retrieval: string };
+  rows: FigureSetCRow[];
+}
+
+export interface FiguresLab {
+  model: string;
+  prompt_version: string;
+  digest: string | null;
+  status: FigureStatus;
+  examples: FigureExample[];
+  figure: FigureInfo;
+  before: { inside: string[]; beside: FigureBeside[] };
+  after: FigureAfter;
+  truth: FigureTruth | null;
+  question: FigureQuestion | null;
+  set_c_runs: FigureSetCRun[];
 }

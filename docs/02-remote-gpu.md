@@ -244,6 +244,32 @@ went on from the 1,335 lines already cached, since the qwen3:8b digest was the
 same. Two jobs had stopped earlier on one bad unit each (a tunnel timeout, a
 401-character line): both now count the unit and go on.
 
+## Figures: a vision-only session (M7, 2026-10-23)
+
+**The first session failed, and why.** The cell `--models qwen3.5:9b gemma4:12b
+qwen3.5:4b --worker qwen3-0.6b-gpu qwen3-4b` downloaded about 27 GB (about 40
+minutes), then the worker died loading the 1.2 GB reranker with 60 MB of the T4
+free: `start.sh` loaded each model to check where it ran and left it resident
+for Ollama's 30-minute keep-alive (6.2 + 8.0 GB). Ollama does not make room for
+another process; it pushed qwen3.5:4b onto the CPU instead. **Fixed:** each
+model is released right after its check (`release_model`), everything Ollama
+holds is released before the worker starts (`release_all_models`), and the cell
+stops *before* the worker's downloads when less than 3,000 MiB is free. The
+laptop also unloads a vision model when `./rag figures try` or `describe`
+finishes.
+
+**The session that worked:** `./rag llm colab --models qwen3.5:9b gemma4:12b`
+(no worker, about 15 GB). Plan a cell's GPU memory step by step before asking
+for it, and run whatever fits here locally (qwen3.5:4b's bake-off ran on this
+CPU):
+
+1. `./rag figures try --models qwen3.5:9b gemma4:12b` (Set C's four figures;
+   each model unloaded after), and with `--prompt vision-v2`.
+2. `./rag figures describe --model gemma4:12b`: 288 figures, two requests in
+   flight, about 12 s each on GEP's chart panels (the photos first, ~3 s).
+3. `./rag figures export docling-structure-embeddinggemma2-fig`, disconnect; the
+   index is built here and never calls Colab.
+
 ## Failures, and what each means
 
 | Seen | Meaning | Do |
@@ -257,6 +283,8 @@ same. Two jobs had stopped earlier on one bad unit each (a tunnel timeout, a
 | "Query rewriting is done by Remote AI, which is not connected" | a rewrite that is not remembered yet, with no runtime | connect, or replay a run whose rewrites are cached |
 | "different build" | the runtime's model digest differs from the index's | rebuild the index on Colab |
 | GPU "None" / a model "on the CPU" | Colab handed out a runtime without a GPU | Runtime › Change runtime type › T4 GPU, run the cell again |
+| "only N MiB of GPU memory is free, and the worker needs about 3000 MiB" | something still holds the T4 (another model, an old worker) | the cell printed `nvidia-smi`; stop what holds it, or start a fresh runtime |
+| "Figures are already being described" | a description job for that same model is running | wait for it, or describe with another model |
 
 ## Not here yet, on purpose
 

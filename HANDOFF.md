@@ -1,6 +1,6 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-22 ~22:40 IST, at the end of M6 (staged, not committed; M5 = 178c0d4). A new session should read, in
+Updated 2026-10-23 ~21:45 IST, at the end of M7 (staged, not committed; M6 = 9a9780d). A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -23,7 +23,7 @@ questions.
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
 
-## M6 status: complete (staged, not committed)
+## M6 status: complete (committed by the user as 9a9780d)
 
 **Built:** ladder row 10 (two local answer models, thinking off verified live), How it works 9, 10,
 12 and 13 interactive. Engine: `learn.py` (`recorded_answers`, `prompt_lab`, `cite_lab`,
@@ -57,8 +57,8 @@ copy in `lib/stages.ts`. Tools: `scripts/eval_watchdog.sh` (memory watchdog, mea
 qwen3:1.7b invented facts. Injection inside a passage (crafted page, one call each): qwen3:1.7b gives
 the injected 99 with v2 and v3; qwen3.5:4b and gemma4:e4b keep to 42 with both.
 
-**Defaults are unchanged** (5d, prompt v3, dense, qwen3:1.7b, every switch off). **Waiting for the
-user:** which answer model becomes the default (candidate: gemma4:e4b, 24·1·0 but ~47 s and 8 GB;
+**Defaults were unchanged** (5d, prompt v3, dense, qwen3:1.7b, every switch off). **Decided by the
+user 2026-10-23: gemma4:e4b.** (Was: which answer model becomes the default (candidate: gemma4:e4b, 24·1·0 but ~47 s and 8 GB;
 qwen3:1.7b stays the light option).
 
 **If `data/` is wiped:** the M2-M5 commands, then the row 10 scorecards (no Colab, the 4B scores must
@@ -67,12 +67,168 @@ be cached first, see M5): `scripts/eval_watchdog.sh r10b --set a b d --prompt v3
 answers (10b)"` (10a: `--model qwen3.5:4b`, label "(10a)"), and Set E with `--set e` and labels
 "Set E: follow-ups rewritten, Docling + 4B, <model>". Close VS Code/Vivaldi first for gemma4.
 
-## Next: M7 of the reduced plan
+## M7 status: complete (staged, not committed)
 
-`docs/plans/m6-m8.md` M7: figures as vision descriptions (Set C, row 11) + How it works 11, one Colab
-session. Note from M6: **gemma4:e4b lists `vision` among its capabilities** and runs here; the plan
-says a vision model on Colab (qwen3.5:4b vision or a gemma4 tag on the T4). Ask the user whether a
-local gemma4:e4b vision pass is acceptable (8 GB, slow) before planning a Colab session.
+**Built:** figures as text. `rag_studio/vision.py` (regions from Docling's picture items, crop widened to a
+title printed above, PNG drawn from the PDF and keyed by hash, prompt `vision-v1`, a description cache that
+keeps bad outputs, a resumable Remote AI job per model, figure passages, export/import, `truth_check`
+against values measured from the drawing); profile `docling-structure-embeddinggemma2-fig` (row 11;
+`IndexProfile.figures`, recorded only when set); `./rag figures list|status|try|describe|check|export|import`;
+Set C (`data/golden/set_c.json`, 4 questions, every key measured from the PDF's vector paths);
+How it works 11 (`learn.figures_lab`, `/api/learn/figures`, `/api/figures/{id}/image`,
+`components/learn/figures-lab.tsx`); figure sources "Figure (described by gemma4:12b)" and their page
+box. **Default answer model = gemma4:e4b** (user) with `config.ANSWER_RAM_GB` and `answer.check_memory`
+(Ask and eval refuse rather than swap), two-pass runs for large models, `/api/status` `memory.parts`.
+Colab: `start.sh` releases each model after its check and everything before the worker, and fails
+before the downloads below 3000 MiB free. `scripts/run_progress.sh` (a terminal view of a run).
+
+| Check | Result |
+|---|---|
+| Vision model | gemma4:12b + vision-v1, chosen by a bake-off read by hand against the drawing (`docs/steps/11-figures.md`) |
+| Figures | 288 found, 286 described in 50 min on the T4, 237 indexed, 49 photos/logos, 2 bad (cut at 900 tokens) |
+| Tests | `./rag test` (see the close-out run below); UI typecheck and lint clean |
+| UI | QA `docs/qa/2026-10-23-m7-figures.md`: M7-01 (P1), 02, 03 fixed; 04 (P3) open |
+
+**Row 11** (gemma4:e4b answers, prompt v3, no reranker; `docs/ladder.md`):
+
+| Variant | Run | Set C | Sets A+D | Answer median |
+|---|---|---|---|---|
+| 11 (before): 5d | `20261023-150923-8680` | 0 · 3 · 1 | 21 · 1 · 3 | 42.2 s |
+| **11a: 5d + figures** | `20261023-153310-8b12` | **4 · 0 · 0** | 21 · 1 · 3 | 45.3 s |
+
+No A or D question changed; the traps T1, T4, T5 stay refused with a figure passage in their top 5; C1's
+pass is weak (it lists the parts in order). **The `-fig` index is now the default** (user, 2026-10-23:
+`profiles.DEFAULT`; Ask, `./rag eval` and the labs use it). Open: the C1 key could demand "largest"
+wording; not changed.
+
+**If `data/` is wiped:** the M2-M5 commands, then `./rag figures import docling-structure-embeddinggemma2-fig`
+(from the committed export) and `./rag index build docling-structure-embeddinggemma2-fig` (~5 min with the
+vector cache, ~20 without), then the two row-11 scorecards (commands in `docs/ladder.md`, row 11).
+
+## Next: M8 of the reduced plan
+
+`docs/plans/m6-m8.md` M8: the full QA matrix (every page at 375/768/1024/1280/1440, light and dark,
+keyboard, clean console), docs complete, close-out. Not done in M7: Ask with a figure source in the
+browser (needs gemma4:e4b's 8 GB), a keyboard pass over the figures picker.
+
+## M7 log (how it went; the status is above)
+
+### M7 progress: 2026-10-23 14:10 IST checkpoint
+
+**Read this first when resuming M7.** M6 is committed by the user (9a9780d). Nothing staged for M7.
+
+**14:10 — everything but the answer scorecards is done.** Colab session 2 finished and the user
+deleted the runtime: 286/288 figures described by gemma4:12b (237 indexed, 49 photos/logos, 2 bad:
+GEP p85 C, p114 A, cut at 900 tokens), exported to `data/figures/docling-structure-embeddinggemma2-fig.jsonl`
+(303 KB, 288 rows; commit it like the context export). `-fig` index built here (1,710 rows, 237
+embedded, 282 s). Retrieval-only (`20261023-084058-7910` 5d, `…084112-afa1` -fig, Sets A+C+D): every
+A/D answer page at the same rank, Set C figure passage rank 1 for all 4, MRR 0.871 → 0.892; 7 A/D
+questions get a figure in their top 5 (A3, A8, D4, D9, traps T1, T4, T5), all answerable facts still
+in the top 5. Browser QA of How it works 11 done (`docs/qa/2026-10-23-m7-figures.md`, M7-01..03
+fixed, 04 open P3). Docs: ladder row 11 (retrieval), steps/11 (run + bake-off), CLAUDE.md M7.
+**Waiting for the user** (busy in VS Code/Vivaldi; chose "Later, with me"): when they close both,
+run, one after the other (≥ 8 GB free, check `free -m`, trading not active):
+`scripts/eval_watchdog.sh r11-before --set a c d --prompt v3 --profile docling-structure-embeddinggemma2 --model gemma4:e4b --ladder 11 --label "Default (5d), gemma4:e4b answers"`
+then `scripts/eval_watchdog.sh r11a --set a c d --prompt v3 --profile docling-structure-embeddinggemma2-fig --model gemma4:e4b --ladder 11 --label "5d + figures, gemma4:e4b answers (11a)"`
+(~25 min each; two-pass now applies to gemma4). Then: read every Set C answer and the traps T1/T4/T5,
+ladder row 11 table + summary row, steps/11 Measured, Ask with a figure source (optional, 8 GB),
+stage (incl. `data/figures/`, `data/golden/set_c.json`), HANDOFF, report, commit message.
+
+**User decisions (2026-10-22/23, don't re-ask):** the vision pass runs on the **Colab T4, one
+session** (bake-off qwen3.5:9b / gemma4:12b / qwen3.5:4b on the Set C figures, keep the one whose
+values match the drawing, describe everything, same session fills the 4B reranker cache for the
+figures index). **gemma4:e4b becomes the default answer model** (not switched in code yet).
+The user stressed: **image analysis must be accurate first**, before judging the RAG: every Set C
+key comes from the PDF's vector geometry + a 300 dpi crop + a full-text search, never a visual guess
+(my 90-dpi reading of a poverty bar was off by 0.4 points; the drawing is the truth).
+
+**Done:**
+- `data/golden/set_c.json` (new, unstaged): C1 iMac p2 largest part of the 445 kg baseline =
+  materials and process (171 of 401 pt ≈ 190 kg; iMac's own bar is led by product use 156 kg);
+  C2 GEP fig 2.7.D South Asia poverty 2028 = 18.93% (bars 20.78/20.07/19.33/18.93; key 18.6-19.2);
+  C3 GEP fig 3.1.C non-investment-grade spreads 2020 pandemic ≈ 525 bp (310 in 2022; IG 191/36;
+  key 495-555; text has distractors 190/114 bp); C4 GEP fig 3.1.D largest 2026 risk category =
+  moderate risk 40.0% (high 34.3, distress 13.4, low 12.1). Each has a `truth` block (region id,
+  every value, axis span, tolerance). Keys tested on 15 sample answers, 0 mismatches. None of the
+  values occurs in the text.
+- `rag_studio/vision.py` (new): regions from Docling pictures (≥0.5% of the page; crop widened to a
+  short title printed ≤24 pt above, e.g. "D. Poverty"; figure heading "FIGURE 2.7 SAR: Outlook"
+  added by code; panel-title sections stripped), PNG render 150-400 dpi (long side ~1024 px),
+  render-key index so images are drawn once, prompt `vision-v1` (Title/Kind/Axes/Series/Data table
+  with '~' for estimates/Largest/Takeaway), cache `data/cache/figures/<model>/<digest>/<prompt>/
+  <image sha>.json` incl. bad outputs, resumable job, `passages()` for the build (photos/logos by
+  the model's Kind line are not indexed), export/import `data/figures/<profile>.jsonl`,
+  `truth_check` (reading per value, error as a share of the axis span).
+- `profiles.py`: `IndexProfile.figures` (config key only when set; 16 profiles, 0 recorded configs
+  changed) and `docling-structure-embeddinggemma2-fig` (row 11). `ingest.passages_for` adds figure
+  passages; the manifest records `figures`. `paths.FIGURES`; `tests/conftest.py` tmp_data has it.
+- CLI `./rag figures list|status|try|describe|check|export|import` (and in `./rag`'s router).
+- Measured locally on iMac p2 (old prompt): qwen3.5:4b 66 s, 3.7 GB, named the largest baseline part
+  right but misordered the iMac bar; gemma4:e4b 47 s, 7.4 GB, gave no segment sizes.
+- 288 regions (iMac 17, GPO 49, GEP 222). **GEP draws ~57 chart panels as raster images with no text
+  layer**, so neither text nor vector paths can separate charts from photos: the model's Kind decides.
+- Research (agent, 2026-10-22): no MCP/skill beats the PyMuPDF vector truth; adopted the data-table
+  prompt (WB-ChartExtract, arXiv 2605.27298), axis-span error (PaperUnPlot NMS), per-panel crops
+  (Gemma 4 caps an image at 1,120 tokens). Optional second reader: Docling's Granite Vision 4.1 4B
+  chart extraction (in our docling 2.139.0; ~8 GB on Colab) — not asked yet.
+
+**12:30 — Colab session 1 FAILED (my fault, ~40 min of the user's T4 lost):** the cell
+`--models qwen3.5:9b gemma4:12b qwen3.5:4b --worker qwen3-0.6b-gpu qwen3-4b` pulled ~27 GB, then the
+worker OOMed: start.sh left every startup-checked model resident (keep-alive 30m; 6.2 + 8.0 GB) and
+the worker had 60 MB of the T4. Ollama does not evict for the worker (it pushed qwen3.5:4b to the CPU
+instead). The user deleted that runtime. **Fixed in `tools/colab/start.sh`:** `release_model` after
+each model's check, `release_all_models` + a free-GPU check (die below 3000 MiB) BEFORE the worker
+downloads anything; the CLI's `figures try/describe` unload the vision model when done. Tested:
+syntax, 147 Colab/remote tests, release against the local Ollama 0.32.6, the cell embeds the fix
+(start.sh sha ccb0d9287d09). **User decision (12:27): vision only, 2 models** —
+`./rag llm colab --models qwen3.5:9b gemma4:12b --copy` (~15 GB, no worker); qwen3.5:4b's bake-off
+runs locally; **row 11 is measured without the reranker** (5d + figures vs 5d, gemma4:e4b answers);
+a reranker row only later, via a small second cell on the same runtime, if the user asks.
+
+**12:50 IST — Colab session 2 (vision only) RUNNING:** runtime `times-famous-driver-fly`
+(`--models qwen3.5:9b gemma4:12b`, no worker). Bake-off done (`docs/steps/11-figures.md` has the
+whole table, read by hand AND `./rag figures check`): **gemma4:12b + vision-v1 chosen** (C1 4/8 but the
+answer right, C2 7/7, C3 4/4, C4 8/8 incl. stacked; ~19 s/figure); qwen3.5:9b cut off on C1 and
+botched C4; qwen3.5:4b (local) fails both stacked charts; vision-v2 (stacked-bar hints) helped no one
+and hurt gemma4 on C1 (kept as a record). `vision.VISION_MODEL = "gemma4:12b"`, config vision role =
+gemma4:12b (remote). **The full run started 07:18 UTC:** `./rag figures describe --model gemma4:12b
+--prompt vision-v1 --on colab` (288 figures, resumable: if cut, rerun the same command). After it:
+`./rag figures status --model gemma4:12b`, `./rag figures export docling-structure-embeddinggemma2-fig`,
+disconnect (`./rag llm disconnect`; tell the user the runtime can be deleted), then build the `-fig`
+index here (`./rag index build docling-structure-embeddinggemma2-fig`, EmbeddingGemma 2, ~3.2 GB free
+needed; the other 1,473 passage vectors come from the vector cache), then row 11 (no reranker):
+`--set a c d --profile docling-structure-embeddinggemma2-fig --prompt v3 --model gemma4:e4b --ladder 11`
+and the same on `docling-structure-embeddinggemma2` (5d + gemma4, the before row), both under
+`scripts/eval_watchdog.sh`, VS Code/Vivaldi closed.
+
+**13:10 IST checkpoint:** describe at 135/288 (0 bad, 0 cut, ~12 s/figure; Kind lines cross-checked
+against colour counts: no chart wrongly called a photo/logo so far). Done since 12:50: How it works 11
+(`learn.figures_lab`, `/api/learn/figures`, `/api/figures/{id}/image`, `components/learn/figures-lab.tsx`
+built by the builder agent and reviewed: fixed `after.bad` (an object, would have crashed), container
+queries, wording), step 11 `explain` in `lib/stages.ts`, docs: `docs/steps/11-figures.md` (bake-off),
+research.md §5.1, 02-remote-gpu.md (the failed session + fix), 01-architecture.md, product-language.md
+(figure passage, figure). `tests/test_figures_api.py` (7). **Full suite 573 passed, 1 skipped**
+(`test_local_and_colab_vectors_match` now skips when the runtime lacks the model). UI tsc + lint clean.
+Not done yet: browser QA of /learn/figures and a figure source in Ask (needs `./rag web` + the built
+`-fig` index), ladder.md row 11, 00-start-here.md, CLAUDE.md M7 UI gotchas if any.
+
+**Also done this session:** default answer model = gemma4:e4b (`config.ROLES`), `config.ANSWER_RAM_GB`
+(qwen3:1.7b 5.4, qwen3.5:4b 6.7, gemma4:e4b 8.0 GB), `answer.check_memory` before generating (Ask and
+eval refuse with "Not enough free memory to load …"; an eval run FAILS on it, keeping finished
+questions), `/api/status` `memory.parts` + Ask's notice names both parts; figure sources
+`described_by` + the badge "Figure (described by …)"; the boxes endpoint returns a figure's own box
+(`:pN:fN` chunk ids); table-aware `truth_check`; per-model figures job lock. Tests: affected suites 118
+passed; tests/test_health.py updated for the new default.
+
+`tests/test_vision.py`: 22 passed (11:00). **Superseded next step:** ask the user to start Colab with
+`./rag llm colab --models qwen3.5:9b gemma4:12b qwen3.5:4b --worker qwen3-0.6b-gpu qwen3-4b --copy`
+(the cell builds, 43 KB; the worker loads its FIRST reranker at start, so the 0.6B (2 GB) goes first
+and the 4B (~9 GB peak) swaps in only after the vision model is unloaded: they do not fit together); `./rag figures
+try --models qwen3.5:9b gemma4:12b qwen3.5:4b`; read every description against the truth; pick
+`vision.VISION_MODEL`; `./rag figures describe`; export; build `-fig` here; retrieval-only runs with
+`--rerank qwen3-4b` on Colab for Sets A, C, D on `-fig` and Set C on 5d; disconnect; scorecards
+(gemma4:e4b, watchdog) row 11; switch the default answer model; API/UI (figure sources, boxes,
+How it works 11); docs; QA.
 
 ## M5 status: complete (committed by the user as 178c0d4)
 
