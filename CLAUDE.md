@@ -312,3 +312,27 @@ Warning / Needs attention / Unavailable.
   draw a result only if it matches the current key's parameters.
 - With the sidebar open, a 1280 px window leaves a content container of about
   960 px: pick container-query breakpoints (`@4xl` = 56rem) for that, not 64rem.
+
+## UI gotchas (learned in M8)
+
+- **The QA matrix runs from `scripts/qa/`** (`build.cjs` bundles axe-core into
+  `harness-src.js`): inject it into an open app page with DevTools
+  `evaluate_script` (sourcePath, format "script"); it loads each page in an
+  iframe of the width under test. Keep a call to 2-3 pages: past DevTools' 180 s
+  limit the tab can stop responding (open a fresh one). Bring the harness tab to
+  the front: background tabs throttle its timers.
+- Scrollbars: once `scrollbar-width` or `scrollbar-color` is set, Chrome ignores
+  `::-webkit-scrollbar`, and `thin` is 10 px on Linux. Chromium gets the webkit
+  rules (6 px); the standard ones are gated to Firefox by
+  `@supports not selector(::-webkit-scrollbar)` (`globals.css`).
+- Light `--muted-foreground` is oklch 0.54, not shadcn's 0.556: 0.556 on
+  `bg-muted` is 4.34:1. Text on a translucent tint must be measured on the real
+  background (chart-1 on `bg-chart-1/15` was 3.7-4.4:1); white text needs a
+  600-700 step, black text in dark a 400-500 step (`chunk-text.tsx`).
+- `ui/select.tsx`'s list is `w-max` within `--anchor-width`..`--available-width`:
+  shadcn's `w-(--anchor-width)` clipped long items under the check mark.
+- A saved conversation keeps each passage's number, document and page, not its
+  text: `AnswerText` takes them as `saved`, or every `[n]` reads as invented.
+- axe's `scrollable-region-focusable` is moot in Chrome 130+ and Firefox (they
+  make scrollers keyboard-focusable); it still applies to Safari. In dev mode the
+  first Tab can land on the `nextjs-portal` dev-tools button.

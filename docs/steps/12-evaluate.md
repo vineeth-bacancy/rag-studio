@@ -9,11 +9,13 @@ comes back, so each upgrade has to earn its place.
 |---|---|---|---|
 | A | your 9 + traps T1, T2 | yes | the main scorecard (spec §7) |
 | B | 6 | retrieval only | single facts stated on several pages |
+| C | 4 (M7) | yes | values that only a chart shows: iMac p2's footprint bar, three GEP chart panels; every key measured from the PDF's drawing (`truth` block per question) |
 | D | 11 + traps T3-T5 | yes | edge cases: near-miss numbers, arithmetic, table cells, a flattened table, a paraphrase, typos, Spanish, two documents at once, a false premise, an instruction override, a wrong product, a wrong year |
 | E | 8 follow-ups (M5) | yes | conversation memory: each question is asked after a recorded first turn and only makes sense with it ("And for 2027?"), including a refusal and a change of subject |
 
-Set C (figures) arrives in M7, after its answer is confirmed from the chart's
-drawing commands. Every Set D answer was found in the extracted text, and every
+Set C's keys were measured from the chart's drawing commands (`get_drawings()`
+heights calibrated by the axis ticks, then a 300 dpi crop), never read by eye
+(`docs/steps/11-figures.md`). Every Set D answer was found in the extracted text, and every
 page that states it is listed (`scripts/find_pages.py`, e.g.
 `.venv/bin/python scripts/find_pages.py gpo 'net income' 100`). D3's key was widened on 2026-10-15: page 44
 calls the *adjusted* figure plain "net income", so a $17.9M decrease is as

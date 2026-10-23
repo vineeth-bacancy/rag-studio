@@ -71,5 +71,6 @@ passages read back from the run's own index build (as step 9):
 `think: false` is always sent (`llm.chat_stream`). On this CPU qwen3.5:4b
 reads a 1,339-token prompt at about 25 tokens/s and writes at 5.8;
 gemma4:e4b reads at about 32 and writes at 7.5, after a 29 s load. Details and
-what the Wrongs were: `docs/ladder.md`, row 10. The default answer model is
-the user's call; it stays qwen3:1.7b until then.
+what the Wrongs were: `docs/ladder.md`, row 10. The user made gemma4:e4b
+the default answer model (2026-10-23, after row 10); qwen3:1.7b stays the
+light option (`--model qwen3:1.7b`, about 17 s an answer and 5.4 GB).

@@ -65,12 +65,14 @@ Present now (M4). Each RAG step has a doc in `docs/steps/`.
 | `cli.py` | Terminal views behind `./rag`: health, ingest, index, llm, context, figures, rerank, eval |
 
 Cut from this version (2026-10-22, `docs/plans/m6-m8.md`): the `judge`,
-RAGAS/DeepEval, tracing export, and figure image embeddings (M7 is vision
-descriptions only). Outside the
+RAGAS/DeepEval, tracing export, figure image embeddings (M7 is vision
+descriptions only) and answer models on Colab. Deferred to a later version:
+upload from the browser (add a PDF by copying it into `data/pdfs/` and
+rebuilding the index) and editing test questions in the browser. Outside the
 package: `tools/colab/` (the gateway, the GPU worker and the start script, which
 run on the Colab runtime; docs/02-remote-gpu.md).
 
-## API surface (M6)
+## API surface
 
 | Endpoint | Returns |
 |---|---|
@@ -143,7 +145,8 @@ The model is *reachability*, as in the trading app:
    phrases in passages and questions are flagged and shown, and prompt v3 fences
    passages off as quoted data. `tests/test_guard.py` builds a PDF with each trick.
 5. **Nothing leaves the machine** except calls to your own Colab runtime.
-   Tracing (M6) is self-hosted on loopback. Logs hold sizes and counts, never
+   There is no tracing service (Phoenix/Langfuse were cut, 2026-10-22): the
+   in-app trace (`trace.py`) is the only one. Logs hold sizes and counts, never
    document or answer content.
 
 ## Data on disk

@@ -34,7 +34,15 @@ export interface Exchange {
   done?: AskDone;
   error?: AskError;
   /** Loaded from a saved conversation: the answer and where it came from, not the passages. */
-  saved?: { standalone: string | null; rewritten: boolean | null; citations: { n: number; chunk_id: string; doc_id: string; page: number }[]; refused: boolean; ms: number | null };
+  saved?: {
+    standalone: string | null;
+    rewritten: boolean | null;
+    citations: { n: number; chunk_id: string; doc_id: string; page: number }[];
+    /** Every passage the model was given, by number: where it came from, not its text. */
+    sources: { n: number; chunk_id: string; doc_id: string; page: number }[];
+    refused: boolean;
+    ms: number | null;
+  };
   /** Sent without the follow-up rewrite, on purpose. */
   asTyped?: boolean;
 }
@@ -192,7 +200,14 @@ export const useAsk = create<AskState>((set, get) => {
           status: "done" as const,
           stages: [],
           text: t.answer,
-          saved: { standalone: t.standalone_question, rewritten: t.rewritten, citations: t.citations, refused: t.refused, ms: t.total_ms },
+          saved: {
+            standalone: t.standalone_question,
+            rewritten: t.rewritten,
+            citations: t.citations,
+            sources: t.sources ?? [],
+            refused: t.refused,
+            ms: t.total_ms,
+          },
         })),
       });
     },

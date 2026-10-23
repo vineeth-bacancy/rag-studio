@@ -6,11 +6,11 @@ import { cn } from "@/lib/utils";
  * colour never stands alone.
  */
 export const PASSAGE_COLOURS = [
-  { bg: "bg-sky-500/15", chip: "bg-sky-600 text-white dark:bg-sky-500" },
-  { bg: "bg-violet-500/15", chip: "bg-violet-600 text-white dark:bg-violet-500" },
-  { bg: "bg-amber-500/20", chip: "bg-amber-600 text-white dark:bg-amber-500 dark:text-black" },
+  { bg: "bg-sky-500/15", chip: "bg-sky-700 text-white dark:bg-sky-500 dark:text-black" },
+  { bg: "bg-violet-500/15", chip: "bg-violet-600 text-white dark:bg-violet-400 dark:text-black" },
+  { bg: "bg-amber-500/20", chip: "bg-amber-700 text-white dark:bg-amber-500 dark:text-black" },
   { bg: "bg-teal-500/15", chip: "bg-teal-700 text-white dark:bg-teal-500 dark:text-black" },
-  { bg: "bg-fuchsia-500/15", chip: "bg-fuchsia-600 text-white dark:bg-fuchsia-500" },
+  { bg: "bg-fuchsia-500/15", chip: "bg-fuchsia-600 text-white dark:bg-fuchsia-400 dark:text-black" },
 ];
 
 export interface Span {

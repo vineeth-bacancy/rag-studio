@@ -125,7 +125,10 @@ export default function AskPage() {
             status?.memory.parts?.length
               ? status.memory.parts.map((p) => `${p.what} (about ${p.gb} GB)`).join(" and ")
               : "the search model"
-          }: about ${status?.memory.needed_gb} GB in all, and ${status?.memory.free_gb} GB is free.`}
+          }${
+            // One part already names its size; "in all" only adds up two (M8-08).
+            (status?.memory.parts?.length ?? 0) === 1 ? "" : `: about ${status?.memory.needed_gb} GB in all`
+          }, and ${status?.memory.free_gb} GB is free.`}
           hint="Close some apps, then reload this page. Asking now could slow the whole computer down."
         />
       ) : (
@@ -369,7 +372,14 @@ function ExchangeView({
               </p>
             </div>
           ) : ex.text ? (
-            <AnswerText text={ex.text} sources={sources} docs={docs} onCite={onOpen} streaming={ex.status === "streaming"} />
+            <AnswerText
+              text={ex.text}
+              sources={sources}
+              saved={ex.saved?.sources}
+              docs={docs}
+              onCite={onOpen}
+              streaming={ex.status === "streaming"}
+            />
           ) : null}
 
           {ex.status === "streaming" && (

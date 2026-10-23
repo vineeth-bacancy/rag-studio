@@ -1,6 +1,7 @@
 # Session handoff: RAG Studio
 
-Updated 2026-10-23 ~21:45 IST, at the end of M7 (staged, not committed; M6 = 9a9780d). A new session should read, in
+Updated 2026-10-23 ~23:45 IST, at the end of M8: **the reduced plan (M0-M8) is complete.**
+M8 was committed by Claude at the user's request (M7 = 4734d19, M6 = 9a9780d). A new session should read, in
 order: this file, `CLAUDE.md`, then the build spec
 `~/Dev/RAG/advanced-rag/RAG_STUDIO_PROMPT.md` (§16-17 for how to work and the
 milestones). **Claude builds everything here**; the user reviews, runs and asks
@@ -11,6 +12,8 @@ questions.
 - **Never run `git commit` or push.** At a milestone's end: `git add`, update
   this file, report neatly with every number, and end with a suggested commit
   message. The user commits and pushes. (Repeated by the user during M2.)
+  One-off exception, 2026-10-23: the user asked Claude to commit M8 itself (the
+  same one-line "Mn complete: ..." format) and then shut the laptop down.
 - Repo `~/Dev/RAG/rag-studio`; UI 127.0.0.1:**3100**, API 127.0.0.1:**8775**
   (trading uses 3000/8765). Tracing (Phoenix) was cut.
 - Local model pulls approved, each when its milestone starts: qwen3-embedding:0.6b,
@@ -22,6 +25,39 @@ questions.
 - The user's own `./rag web` is usually running (dev mode, both servers
   reload). Test against it; don't start a second copy. Check free memory too:
   with VS Code open, only 2-4 GB is free; don't run browser QA beside a scorecard run.
+
+## M8 status: complete (committed at the user's request, 2026-10-23)
+
+**Built:** the full QA matrix, run in the user's DevTools Chrome (chrome-devtools-mcp 1.11.0, Chrome 155,
+watched live): 20 pages (7 main + 13 How it works steps) × 375/768/1024/1280/1440 × light/dark = 200
+renders per pass, each checked for page overflow, one `<h1>`, axe-core 4.14.0 (WCAG 2.1 AA + best
+practice), console errors, failed requests and the applied theme; a focus audit on every page; real key
+presses for the skip link, Ctrl+K, a Base UI select, the phone sidebar and the scroll boxes. The harness
+is committed (`scripts/qa/harness-src.js`, `scripts/qa/build.cjs`; how to run it in CLAUDE.md, M8 UI
+gotchas). Report: `docs/qa/2026-10-23-m8-full-matrix.md` (M8-01..13).
+
+| Check | Result |
+|---|---|
+| Matrix after the fixes | **200 / 200 clean**: overflow 0, console 0, failed requests 0, one `<h1>` each, axe 0 apart from `scrollable-region-focusable` (M8-11, Safari only) |
+| Keyboard | every focusable control on every page shows a visible focus and has a name; skip link, Ctrl+K, select, phone sidebar all work by keyboard |
+| Tests | `./rag test` **573 passed, 1 skipped**; UI typecheck and lint clean |
+
+**Fixed:** M8-01 scrollbar 10 → 6 px, transparent track (the user asked); **M8-02 (P1)** a reopened
+conversation drew every citation as invented ("given 0 passages"): saved citations now name document
+and page; M8-03 light `--muted-foreground` 0.556 → 0.54 (4.34 → 4.62:1 on muted); M8-04 badge and
+chunk-chip colours (all ≥ 4.66:1); M8-05 chart-blue on chart-blue tints (embed prefix mark, Ask
+citation chips); M8-06 select lists clipped long names (now as wide as their longest item); M8-07..10
+(ARIA role, memory-notice wording, an empty table header, the sidebar landmark). **Open (P3):** M8-11
+scroll boxes for Safari, M8-12 focus after Ctrl+K navigation; earlier M5-06, M5-07 (P2, kept), M6-03,
+M6-04, M7-04. No P0-P1 open anywhere.
+
+**Docs:** 00-start-here (all 13 steps interactive, M8 done, a "Left out of this version" table),
+01-architecture (no tracing service; cut and deferred), 02-remote-gpu and research (no future tense
+for cut features; research §11 QA tooling and scrollbars), ladder (row 11b cut; the final defaults),
+steps/10 (the default answer model), steps/12 (Set C), plans/m6-m8 (M8 done), CLAUDE.md (M8 UI gotchas).
+
+**Not covered:** a live Ask answer with a figure source (gemma4:e4b needs 8 GB; 6.4 GB was free with
+VS Code open); Safari and Firefox.
 
 ## M6 status: complete (committed by the user as 9a9780d)
 
@@ -67,7 +103,7 @@ be cached first, see M5): `scripts/eval_watchdog.sh r10b --set a b d --prompt v3
 answers (10b)"` (10a: `--model qwen3.5:4b`, label "(10a)"), and Set E with `--set e` and labels
 "Set E: follow-ups rewritten, Docling + 4B, <model>". Close VS Code/Vivaldi first for gemma4.
 
-## M7 status: complete (staged, not committed)
+## M7 status: complete (committed by the user as 4734d19)
 
 **Built:** figures as text. `rag_studio/vision.py` (regions from Docling's picture items, crop widened to a
 title printed above, PNG drawn from the PDF and keyed by hash, prompt `vision-v1`, a description cache that
@@ -105,11 +141,12 @@ wording; not changed.
 (from the committed export) and `./rag index build docling-structure-embeddinggemma2-fig` (~5 min with the
 vector cache, ~20 without), then the two row-11 scorecards (commands in `docs/ladder.md`, row 11).
 
-## Next: M8 of the reduced plan
+## Next: nothing scheduled (the reduced plan is complete)
 
-`docs/plans/m6-m8.md` M8: the full QA matrix (every page at 375/768/1024/1280/1440, light and dark,
-keyboard, clean console), docs complete, close-out. Not done in M7: Ask with a figure source in the
-browser (needs gemma4:e4b's 8 GB), a keyboard pass over the figures picker.
+Candidates if the user wants more: the deferred browser upload and test-question editing; M8-11
+(`tabIndex={0}` and a label on each scroll box, for Safari), M8-12 and the earlier P3s; a live Ask pass
+with a figure source when ≥ 8 GB is free (close VS Code/Vivaldi); the 4B reranker as a default (needs
+Colab). The figures picker's keyboard pass, carried over from M7, was done in M8.
 
 ## M7 log (how it went; the status is above)
 

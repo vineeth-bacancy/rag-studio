@@ -241,7 +241,7 @@ function PassageCard({ passage: p, data, docs }: { passage: ContextPassage; data
       </CardHeader>
       <CardContent className="space-y-4">
         {onAnswerPage && (
-          <Badge className="h-5 gap-1 bg-sky-600 px-1.5 text-[11px] font-normal text-white dark:bg-sky-500 dark:text-black">
+          <Badge className="h-5 gap-1 bg-sky-700 px-1.5 text-[11px] font-normal text-white dark:bg-sky-500 dark:text-black">
             <Target className="size-3" aria-hidden />
             On an answer page of {data.ranking?.id}
           </Badge>

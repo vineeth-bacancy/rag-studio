@@ -288,7 +288,7 @@ function LiveRun({ question, profile, docs }: { question: string; profile: strin
                   <span className="min-w-0 truncate">{docTitle(h.doc_id, docs)}</span>
                   <span className="shrink-0 text-muted-foreground tabular-nums">p. {h.page}</span>
                   {h.answer_page && (
-                    <Badge className="h-4 gap-1 bg-sky-600 px-1.5 text-[10px] font-normal text-white dark:bg-sky-500 dark:text-black">
+                    <Badge className="h-4 gap-1 bg-sky-700 px-1.5 text-[10px] font-normal text-white dark:bg-sky-500 dark:text-black">
                       <Target className="size-2.5" aria-hidden />
                       Answer page
                     </Badge>

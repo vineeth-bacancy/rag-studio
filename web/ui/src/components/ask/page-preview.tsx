@@ -54,7 +54,7 @@ function PreviewBody({ source, profile, docs }: { source: Source; profile: strin
     <>
       <DialogHeader className="pr-8">
         <DialogTitle className="flex items-center gap-2">
-          <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-chart-1/15 text-xs font-semibold text-chart-1 tabular-nums">
+          <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-chart-1/10 text-xs font-semibold text-chart-1 tabular-nums">
             {source.n}
           </span>
           <span className="truncate">{docTitle(source.doc_id, docs)}</span>

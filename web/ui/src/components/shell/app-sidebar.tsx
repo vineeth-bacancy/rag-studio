@@ -90,7 +90,10 @@ export function AppSidebar() {
           : `Answers come from ${ai.answer_model}, on this computer.`;
 
   return (
-    <Sidebar collapsible="icon">
+    // On a desktop the sidebar is a named landmark, so its brand and status rows
+    // are not loose content (axe "region", M8). On a phone it is already a dialog,
+    // and its props go to the Sheet's root, which renders no element.
+    <Sidebar collapsible="icon" {...(isMobile ? {} : { role: "complementary", "aria-label": "Sidebar" })}>
       <SidebarHeader className="border-b">
         <Link
           href="/"

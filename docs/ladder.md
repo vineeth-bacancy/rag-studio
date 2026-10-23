@@ -48,9 +48,14 @@ Pass · Refused · Wrong. Every row below was run on this laptop's CPU.
 | 9b | 6d + multi-step search | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M5 ✓ |
 | 10a | 6d with qwen3.5:4b answering (thinking off) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **11 · 1 · 2** | M6 ✓ |
 | 10b | 6d with gemma4:e4b answering (thinking off) | **9/9** | **6/6** | **11/11** | **11 · 0 · 0** | **13 · 1 · 0** | M6 ✓ |
-| 11 (before) | 5d with gemma4:e4b answering: the app's default setup since M7 (no reranker) | **9/9** | - | 10/11 | 10 · 0 · 1 | 11 · 1 · 2 | M7 ✓ (Set C 0 · 3 · 1) |
+| 11 (before) | 5d with gemma4:e4b answering (no reranker): the default setup until the figures index | **9/9** | - | 10/11 | 10 · 0 · 1 | 11 · 1 · 2 | M7 ✓ (Set C 0 · 3 · 1) |
 | 11a | 5d + a passage for every chart (described by gemma4:12b), gemma4:e4b answering | **9/9** | - | 10/11 | 10 · 0 · 1 | 11 · 1 · 2 | M7 ✓ (**Set C 4 · 0 · 0**) |
-| 11 | Figure paths | - | - | - | - | - | M7 |
+| 11b | Figure image embeddings (EmbeddingGemma 2) and fusion | - | - | - | - | - | cut (2026-10-22, `docs/plans/m6-m8.md`) |
+
+**The app's defaults at the end of M8 (2026-10-23):** row 11a: the figures index
+`docling-structure-embeddinggemma2-fig`, dense search, top 5, prompt v3,
+gemma4:e4b answering, every M5 switch off. The 4B reranker (row 6d, the best
+Sets A+D retrieval) stays a one-click switch for when Colab is connected.
 
 ## Row 11, measured 2026-10-23
 

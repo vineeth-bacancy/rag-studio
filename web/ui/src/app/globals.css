@@ -65,7 +65,7 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: oklch(0.54 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -184,52 +184,58 @@
 
 /* ---------------------------------------------------------------------------
    Scrollbars - one style for every page and every scroll container, set here
-   and nowhere else: a thin thumb on a transparent track, in both themes.
+   and nowhere else: a 6 px gutter, a translucent thumb, a transparent track,
+   in both themes.
 
    Two mechanisms, because browsers disagree:
-   - Chrome 121+, Edge and Firefox support the standard `scrollbar-width` and
-     `scrollbar-color`. Once either is set, Chrome IGNORES the
-     ::-webkit-scrollbar rules, so the two must never apply together.
-   - Safari has no `scrollbar-color`, so it gets the ::-webkit-scrollbar
-     version, gated by @supports so Chrome never sees both.
-   `scrollbar-width` is not inherited, hence `*`. In @layer base so a
-   component can still opt out with a utility (`no-scrollbar` below).
+   - Chrome, Edge and Safari get ::-webkit-scrollbar, the only way to set a
+     width in pixels. The standard `scrollbar-width: thin` is 10 px wide in
+     Chrome on Linux, and once `scrollbar-width` or `scrollbar-color` is set
+     Chrome IGNORES the ::-webkit-scrollbar rules, so the two must never apply
+     together (M8: the user asked for a thinner bar).
+   - Firefox has no ::-webkit-scrollbar, so it gets the standard properties
+     (`thin` is its narrowest). `scrollbar-width` is not inherited, hence `*`.
+   In @layer base so a component can still opt out with a utility
+   (`no-scrollbar` below).
 
    The thumb is the foreground at low opacity, so it follows the theme without
    a second set of values; the track shows the surface behind it.
 --------------------------------------------------------------------------- */
 :root {
-  --scrollbar-thumb: color-mix(in oklch, var(--foreground) 22%, transparent);
-  --scrollbar-thumb-hover: color-mix(in oklch, var(--foreground) 38%, transparent);
+  --scrollbar-thumb: color-mix(in oklch, var(--foreground) 20%, transparent);
+  --scrollbar-thumb-hover: color-mix(in oklch, var(--foreground) 40%, transparent);
 }
 
 @layer base {
-  @supports (scrollbar-color: auto) {
-    * {
-      scrollbar-width: thin;
-      scrollbar-color: var(--scrollbar-thumb) transparent;
-    }
-  }
-
-  @supports not (scrollbar-color: auto) {
+  @supports selector(::-webkit-scrollbar) {
     ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       background: transparent;
     }
     ::-webkit-scrollbar-track,
     ::-webkit-scrollbar-corner {
       background: transparent;
     }
+    ::-webkit-scrollbar-button {
+      display: none;
+    }
     ::-webkit-scrollbar-thumb {
-      /* The transparent border insets the thumb, so it reads as thin. */
-      border: 2px solid transparent;
+      /* The transparent border insets the thumb from the edge. */
+      border: 1px solid transparent;
       border-radius: 9999px;
       background-color: var(--scrollbar-thumb);
       background-clip: content-box;
     }
     ::-webkit-scrollbar-thumb:hover {
       background-color: var(--scrollbar-thumb-hover);
+    }
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scrollbar-thumb) transparent;
     }
   }
 }

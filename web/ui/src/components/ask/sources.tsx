@@ -86,7 +86,7 @@ function SourceRow({
         <span
           className={cn(
             "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold tabular-nums",
-            cited ? "bg-chart-1/15 text-chart-1" : "bg-muted text-muted-foreground",
+            cited ? "bg-chart-1/10 text-chart-1" : "bg-muted text-muted-foreground",
           )}
           aria-label={`Passage ${s.n}${cited === null ? "" : cited ? ", cited" : ", not cited"}`}
         >

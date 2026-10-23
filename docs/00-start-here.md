@@ -57,9 +57,9 @@ adds the word index (for BM25) to a build that lacks one, in place.
 
 | Page | What it is for |
 |---|---|
-| **Ask** | A conversation: ask, get a streamed answer with `[n]` citations that open the cited page, outlined; follow-up questions are made whole by Remote AI ("Searched for: …", Ask as typed). Switches for the reranker, query rewriting and multi-step search; conversations are saved on this computer |
+| **Ask** | A conversation: ask, get a streamed answer with `[n]` citations that open the cited page, outlined (a figure source names the model that described it); follow-up questions are made whole by Remote AI ("Searched for: …", Ask as typed). Switches for the reranker, query rewriting and multi-step search; conversations are saved on this computer |
 | **Documents** | The PDF library and the page inspector: any page beside PyMuPDF's raw and cleaned text and Docling's, every rule's change highlighted, hidden text outlined |
-| **How it works** | One interactive section per RAG step, on your own documents. Interactive now: steps 1-8 (extract and parse, clean, the chunk playground, contextual retrieval, embed, the vector store, the search lab with its reranked column, query rewriting and multi-step search) |
+| **How it works** | One interactive section per RAG step, on your own documents, all 13 interactive: extract and parse, clean, the chunk playground, contextual retrieval, embed, the vector store, the search lab with its reranked column, query rewriting and multi-step search, the prompt, generate and cite, figures, evaluate, safety |
 | **Evaluation** | Test questions, runs with every question's evidence, and the upgrade ladder |
 | **Indexes** | Every index profile: build on this computer or on the Colab GPU with live progress, the vector match check, the earlier builds |
 | **Settings** | Model backend (Local AI, or Remote AI on a Colab GPU: the setup cell for each job and Connect), which model does each job and where, and the defaults |
@@ -77,9 +77,18 @@ adds the word index (for BM25) to a build that lacks one, in place.
 | M5 | Reranker (0.6B here, 4B/8B on Colab), context lines, query rewriting, multi-step search, conversations with follow-up rewriting; the Search lab's reranked column; How it works 4 and 8. Ladder rows 6-9, Set E | **Done** (2026-10-22) |
 | M6 | Answer models qwen3.5:4b and gemma4:e4b (thinking off verified), ladder row 10; How it works 9, 10, 12, 13 | **Done** (2026-10-22; gemma4:e4b 24 · 1 · 0. The judge, RAGAS and tracing were cut) |
 | M7 | Figures as vision descriptions (Set C), ladder row 11; How it works 11 | **Done** (2026-10-23; gemma4:12b descriptions, Set C 0 · 3 · 1 → 4 · 0 · 0, A+D unchanged; image embeddings cut) |
-| M8 | Full QA, polish, complete docs | Planned (browser upload deferred to a later version) |
+| M8 | Full QA, polish, complete docs | **Done** (2026-10-23; 21 pages × 5 widths × light and dark, no P0-P1 open, `docs/qa/2026-10-23-m8-full-matrix.md`) |
 
 The reduced plan for M6-M8 (decided 2026-10-22) is `docs/plans/m6-m8.md`.
+
+## Left out of this version
+
+| What | Status |
+|---|---|
+| Upload a PDF from the browser, editing test questions in the browser | Deferred. To add a PDF, copy it into `data/pdfs/` and rebuild the index (Indexes page or `./rag index build <profile>`) |
+| A faithfulness judge, RAGAS/DeepEval, Phoenix/Langfuse tracing | Cut. The deterministic scorecard (expected facts, Hit@k, MRR) is the only judge; the in-app trace is the only trace |
+| EmbeddingGemma 2 image embeddings and figure fusion | Cut. Figures are searched by their vision descriptions (M7) |
+| Answer models on Colab and a remote answer path | Cut. Answers are written on this computer |
 
 ## Where things are
 

@@ -286,12 +286,13 @@ CPU):
 | "only N MiB of GPU memory is free, and the worker needs about 3000 MiB" | something still holds the T4 (another model, an old worker) | the cell printed `nvidia-smi`; stop what holds it, or start a fresh runtime |
 | "Figures are already being described" | a description job for that same model is running | wait for it, or describe with another model |
 
-## Not here yet, on purpose
+## Not here, on purpose
 
-- Answer, vision and judge models on the GPU, and an optional loud local
-  fallback for them (M6/M7 as planned). M5's runtime serves rewriting, context
-  lines and rerankers; the answer model stays on this computer.
+- Answer and judge models on the GPU, and a local fallback for them: cut
+  (2026-10-22, `docs/plans/m6-m8.md`). The runtime serves rewriting, context
+  lines, rerankers and (M7) the vision model that describes figures; the answer
+  model stays on this computer.
 - Gzip on replies over 16 KB (embedding batches) is still unmeasured on a real
   runtime: M5's sessions did not serve embedders. Requests were measured (3.3×).
-- EmbeddingGemma 2 on Colab: it runs in this app (sentence-transformers); its
-  image path arrives with figures in M7.
+- EmbeddingGemma 2 on Colab: it runs in this app (sentence-transformers). Its
+  image path was cut: figures are searched by their vision descriptions (M7).

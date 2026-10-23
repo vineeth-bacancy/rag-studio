@@ -26,7 +26,7 @@ const DEFAULT_ORDER = ["docling-structure-embeddinggemma2", "docling-structure-q
 function Sent({ prefix, text }: { prefix: string; text: string }) {
   return (
     <code className="block rounded-md bg-muted px-2.5 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-      {prefix && <mark className="rounded-sm bg-chart-1/15 px-0.5 text-chart-1">{prefix.replace(/\n/g, "↵\n")}</mark>}
+      {prefix && <mark className="rounded-sm bg-chart-1/20 px-0.5 text-foreground ring-1 ring-chart-1/50">{prefix.replace(/\n/g, "↵\n")}</mark>}
       {text}
     </code>
   );
@@ -77,7 +77,7 @@ function HitList({
 
 function Dots({ kept, of }: { kept: number; of: number }) {
   return (
-    <span className="inline-flex gap-1" aria-label={`${kept} of ${of}`}>
+    <span className="inline-flex gap-1" role="img" aria-label={`${kept} of ${of}`}>
       {Array.from({ length: of }, (_, i) => (
         <span
           key={i}

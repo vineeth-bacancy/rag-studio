@@ -157,8 +157,9 @@ NaN and zeros. 4b is an optional extra row.
 
 **Recommendation:** an in-process **sentence-transformers** profile (fp32,
 text-only, explicit prefixes, renormalise after Matryoshka truncation). This
-brings in the torch stack the reranker needs anyway. Add images in M7 by loading
-with `audio_config=None`.
+brings in the torch stack the reranker needs anyway. (Images were to be added in
+M7 by loading with `audio_config=None`; image embeddings were cut on
+2026-10-22 and figures are searched by their vision descriptions instead.)
 
 ## 5. Answer and vision LLMs: Gemma 4 vs Qwen 3.5
 
@@ -418,6 +419,19 @@ faithfulness with spread (§9.3); latency p50/p95 and model calls per question;
 tokens sent to the answer model; ingest time and index size; for the agentic
 loop, tool calls and the loop or failure rate. Every technique is an A/B against
 the same configuration, judge and prompt hash.
+
+## 11. UI QA tooling and scrollbars (M8, 2026-10-23)
+
+| Claim | Status |
+|---|---|
+| An iframe sized to a width gives media queries, `useIsMobile` and `@container` queries that width, so one window can run the 375-1440 matrix; a CSS scale on the iframe changes only what is shown | VERIFIED-LIVE (Chrome 155: the phone sidebar and container layouts switched per frame, as in M0 and M7) |
+| axe-core 4.14.0 (WCAG 2.1 A/AA + best practice) finds contrast, naming, ARIA and landmark issues per render; it cannot always score text on a translucent tint, so chips were also measured from computed colours on a canvas | VERIFIED-LIVE (200 renders; chip ratios in `docs/qa/2026-10-23-m8-full-matrix.md`) |
+| Chrome ignores `::-webkit-scrollbar` once `scrollbar-width` or `scrollbar-color` is set; `scrollbar-width: thin` is a 10 px gutter on Linux, the webkit rules give 6 px | VERIFIED-LIVE (gutter measured 10 → 6 px, track pixels = page background) |
+| Chrome 130+ makes a scroll box with no focusable content keyboard-focusable (Tab reaches it, arrows scroll), so axe's `scrollable-region-focusable` matters only where that is missing (Safari) | VERIFIED-LIVE (Chrome 155, Documents inspector at 375 px); Safari NOT TESTED |
+
+**Choice:** the matrix runs in the user's DevTools Chrome through the harness in
+`scripts/qa/` (no new project dependency: axe-core is installed into a temporary
+folder when the harness is built).
 
 ## Sources
 

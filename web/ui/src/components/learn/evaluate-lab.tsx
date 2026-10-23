@@ -170,7 +170,9 @@ function Grid({ data, selected, onSelect }: { data: EvaluateLabData; selected: s
         <table className="w-full min-w-[34rem] border-separate border-spacing-1 text-xs">
           <thead>
             <tr>
-              <th className="w-28" />
+              <th className="w-28">
+                <span className="sr-only">Retrieval</span>
+              </th>
               {OUTCOMES.map((o) => (
                 <th key={o} className="pb-1 text-left font-medium">
                   <OutcomeBadge outcome={o} />
